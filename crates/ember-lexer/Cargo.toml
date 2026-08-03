@@ -1,0 +1,12 @@
+[package]
+name = "ember-lexer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ember-span = { path = "../ember-span" }
+ember-diag = { path = "../ember-diag" }
+rustc-hash = "2"
+
+[dev-dependencies]
+proptest = "1"
