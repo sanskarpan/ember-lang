@@ -1,0 +1,8 @@
+[package]
+name = "ember-diag"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ember-span = { path = "../ember-span" }
+ariadne = "0.4"
