@@ -1,0 +1,6 @@
+[package]
+name = "ember-span"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
