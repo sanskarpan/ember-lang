@@ -1,0 +1,6 @@
+[package]
+name = "ember-compile"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
