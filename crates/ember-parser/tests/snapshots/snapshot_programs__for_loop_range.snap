@@ -1,0 +1,5 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+for i in (0 .. 10) (block (call print i);)

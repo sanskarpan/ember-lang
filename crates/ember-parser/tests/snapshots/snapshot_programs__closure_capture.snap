@@ -1,0 +1,5 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+fn make_counter() (block let mut n = 0; || (block (n = (n + 1)); n))

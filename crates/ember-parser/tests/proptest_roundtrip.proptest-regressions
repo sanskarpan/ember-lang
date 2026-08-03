@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f218aed923454b426c5148249a1142563da482dbc77e87e1b6134873e4dfe706 # shrinks to src = "let a = 1 + 1;\nlet if = a * 2;"

@@ -1,0 +1,5 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+fn identity(x) (block x)

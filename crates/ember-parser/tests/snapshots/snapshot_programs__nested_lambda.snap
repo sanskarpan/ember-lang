@@ -1,0 +1,5 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+let compose = |f, g| (block |x| (call f (call g x)));

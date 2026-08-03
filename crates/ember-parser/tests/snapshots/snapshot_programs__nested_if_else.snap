@@ -1,0 +1,5 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+let sign = (if (x > 0) (block "pos") (if (x < 0) (block "neg") (block "zero")));

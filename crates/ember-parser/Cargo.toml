@@ -1,0 +1,14 @@
+[package]
+name = "ember-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ember-span = { path = "../ember-span" }
+ember-diag = { path = "../ember-diag" }
+ember-lexer = { path = "../ember-lexer" }
+ember-ast = { path = "../ember-ast" }
+
+[dev-dependencies]
+insta = "1"
+proptest = "1"
