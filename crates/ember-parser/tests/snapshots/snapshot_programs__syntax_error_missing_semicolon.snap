@@ -1,0 +1,8 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+let a = 1;
+let b = 2;
+-- diagnostics --
+Error: expected `;` after `let` binding
