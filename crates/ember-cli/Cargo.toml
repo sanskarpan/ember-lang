@@ -1,0 +1,16 @@
+[package]
+name = "ember-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ember"
+path = "src/main.rs"
+
+[dependencies]
+ember-span = { path = "../ember-span" }
+ember-diag = { path = "../ember-diag" }
+ember-lexer = { path = "../ember-lexer" }
+ember-ast = { path = "../ember-ast" }
+ember-parser = { path = "../ember-parser" }
+clap = { version = "4", features = ["derive"] }
