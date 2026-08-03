@@ -1,0 +1,6 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+let x = 1;
+let x = (x + 1);
