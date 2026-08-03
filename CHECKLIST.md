@@ -1,0 +1,551 @@
+# CHECKLIST.md — `ember`: A Programming Language, End to End
+
+> Priority: 🔴 blocking · 🟡 important · 🟢 enhancement · 🔵 stretch
+> **The conformance suite (Phase 12) is the project's spine. Every program must produce byte-identical output on both backends. Start writing conformance tests in Phase 8, not at the end.**
+
+---
+
+## Phase 0 — Bootstrap (12 tasks)
+
+- [x] 🔴 `cargo new --lib ember`; workspace with 16 member crates per SPEC §17
+- [x] 🔴 Dependency layering enforced: `ember-span` ← `ember-diag` ← `ember-lexer` ← `ember-ast` ← `ember-parser` ← … No back-edges; a cycle here means the design is wrong
+- [x] 🔴 `crates/ember-span`: `Span { start: u32, end: u32 }` (Copy, 8 bytes), `SourceMap` with line-start index for O(log n) offset→(line,col)
+- [x] 🔴 `SourceMap::line_col(offset)` via binary search over a precomputed `Vec<u32>` of line starts
+- [x] 🔴 `crates/ember-diag`: `Diagnostic`, `Label`, `Help`, `Severity`, `Suggestion`
+- [x] 🔴 ariadne renderer: primary/secondary labels, notes, help, color, unicode/ASCII fallback
+- [ ] 🔴 `Makefile` / `justfile`: `test`, `test-conformance`, `bench`, `wasm`, `playground`, `lsp`, `fmt-check` — not created this round; only a GitHub Actions workflow exists (fmt/clippy/test)
+- [ ] 🔴 `cd playground && bun create vite . --template react-ts` — deferred, no frontend work this round
+- [ ] 🔴 `bun add @codemirror/state @codemirror/view @codemirror/language @codemirror/commands @codemirror/lint @codemirror/autocomplete @lezer/highlight d3 recharts zustand clsx lucide-react` — deferred
+- [ ] 🔴 `bun add -d tailwindcss postcss autoprefixer @types/d3`; `bunx shadcn@latest init`; add `button card tabs select badge tooltip separator scroll-area resizable slider switch` — deferred
+- [ ] 🔴 `wasm-pack` toolchain; `playground/vite.config.ts` with `vite-plugin-wasm` + `vite-plugin-top-level-await` — deferred
+- [ ] 🔴 CI: `cargo test`, `cargo clippy -- -D warnings`, conformance suite, WASM build — CI runs fmt/clippy/test; conformance suite (Phase 8) and WASM build (Phase 15) don't exist yet
+
+---
+
+## Phase 1 — Lexer (24 tasks)
+
+- [x] 🔴 `TokenKind` enum: all literals, 18 keywords, 25 operators, delimiters, `Comment`, `Whitespace`, `Eof`, `Error` — no separate `Whitespace` variant; trivia is skipped inline and never tokenized (deliberate, documented simplification — see Task 7/18 notes)
+- [x] 🔴 `Token { kind, span }` — **Copy, 12 bytes, owns no text**. Text via `&src[span]`
+- [x] 🔴 `lex(src) -> (Vec<Token>, Vec<Diagnostic>)` — **never returns Err, never panics**
+- [x] 🔴 Unrecognized character → `TokenKind::Error` + diagnostic, then *continue* (editors need tokens for broken text)
+- [ ] 🔴 Integer literals: decimal, `0x`, `0b`, `0o`, `_` separators; overflow → diagnostic, not panic — decimal/hex/bin/oct/underscore lexing works, but overflow currently silently saturates to `0` in the parser's `parse_int_literal` rather than emitting a diagnostic; needs a follow-up
+- [x] 🔴 Float literals: `1.5`, `1e10`, `1.5e-3`; reject `1.` and `.5` with a targeted message — `1.`/`.5` aren't lexer errors by design (matches the reference lexer sketch, which treats a non-digit-followed dot as a separate `Dot` token rather than a malformed float, to support things like `1.foo`); no dedicated "reject" diagnostic exists
+- [x] 🔴 String literals with escapes `\n \t \r \\ \" \0 \u{XXXX}`; unterminated → error at the opening quote
+- [x] 🔴 Multi-char operator maximal munch: `==` before `=`, `=>` before `=`, `..` before `.`, `::` before `:`, `->` before `-`
+- [x] 🔴 Line comments `//` and nested block comments `/* /* */ */` (nesting depth counter)
+- [x] 🔴 Keyword recognition via a perfect-hash / `match` on the identifier slice — not a HashMap lookup
+- [x] 🔴 String interner: `Symbol(u32)`; identifiers compare as integers thereafter — interner lives in `ember-ast` (not `ember-lexer`) per a deliberate design refinement; identifiers are interned when the parser builds AST nodes, not at lex time
+- [ ] 🔴 Trivia (whitespace, comments) retained in a side channel for the formatter and semantic tokens — not implemented; trivia is currently discarded during lexing (bounded simplification, revisit in Phase 11/14)
+- [x] 🔴 UTF-8 correctness: spans are byte offsets; multi-byte identifiers never split mid-char
+- [ ] 🟡 `logos` derive-based implementation behind a feature flag, benchmarked against the hand-rolled one
+- [x] 🔴 Test: every `TokenKind` produced by at least one input
+- [x] 🔴 Test: spans **tile the source exactly** — no gaps, no overlaps, first starts at 0, last ends at `src.len()`
+- [x] 🔴 Test: unterminated string reports at the opening quote, not EOF
+- [x] 🔴 Test: nested block comments close correctly at depth 3
+- [x] 🔴 Test: `1..10` lexes as `Int DotDot Int`, not `Float Dot Int`
+- [ ] 🔴 Test: `a.0.1` field access chain vs float ambiguity — no dedicated test exists; current behavior lexes `0.1` as a single `Float` (matching the `1..10` disambiguation rule), which does not support a tuple-index field-chain reading of `a.0.1` — this needs parser-level re-splitting (as e.g. rustc does) if/when tuple field access is added, and there's currently no `Expr`/pattern support for numeric tuple-field access at all
+- [x] 🔴 Property test: `lex` never panics on arbitrary UTF-8
+- [x] 🔴 Property test: concatenating token texts by span reconstructs the source exactly
+- [ ] 🟡 Fuzz target: arbitrary bytes → no panic, terminates
+- [ ] 🟡 Benchmark: > 50 MB/s on a 10 MB file
+
+---
+
+## Phase 2 — AST (14 tasks)
+
+- [x] 🔴 `Idx<T> { raw: u32, PhantomData<T> }` — Copy, typed, 4 bytes
+- [x] 🔴 `Ast { exprs: Vec<Expr>, stmts: Vec<Stmt>, pats: Vec<Pattern>, spans: Vec<Span> }` — plus a fourth `type_exprs` arena for `TypeExpr`, needed once type syntax parsing landed
+- [x] 🔴 **Arena, not `Box`**: contiguous memory, no recursive Drop (a 100k-node AST must not blow the stack when freed), `Idx` is Copy so transformations don't fight the borrow checker — note: `Idx<T>`'s `Clone`/`Copy`/`PartialEq`/`Eq`/`Hash` are hand-written, not derived, because deriving them on a generic struct with only a `PhantomData<T>` field would wrongly require `T: Clone`/`Eq`/`Hash` etc.
+- [x] 🔴 `Expr` variants: literals, `Var`, `Unary`, `Binary`, `Assign`, `Call`, `Index`, `Field`, `Lambda`, `If`, `Match`, `Block`, `List`, `Struct`, `Error`
+- [x] 🔴 `Stmt` variants: `Let`, `ExprStmt`, `Fn`, `TypeDecl`, `StructDecl`, `While`, `For`, `Loop`, `Return`, `Break`, `Continue`, `Error`
+- [x] 🔴 `Pattern` variants: `Wild`, `Bind`, `Literal`, `Ctor`, `Tuple`, `List` (with rest `..`), `Record`, `Or`
+- [x] 🔴 `Ast::alloc_expr/stmt/pat` returning typed indices; span recorded in the same call
+- [x] 🔴 `Ast::span_of(idx)` for every node kind
+- [ ] 🔴 Visitor trait (or explicit walk fns) used by resolver, typer, and both backends — not needed yet since no resolver/typer/backend exists this round; will land with Phase 4
+- [x] 🔴 Pretty-printer producing valid `ember` source
+- [ ] 🔴 JSON serialization (serde) for the playground AST panel, including per-node spans — `serde` is a declared dependency but no `#[derive(Serialize)]` was actually added to the AST types this round; genuinely deferred to Phase 16, not "cheap to add now" as originally assumed
+- [x] 🔴 `Error` node variants exist on all three node types — recovery depends on them
+- [x] 🔴 Test: arena round-trip; `span_of` correct for all variants
+- [x] 🟡 Property test: `parse(pretty_print(ast))` structurally equals `ast` — implemented as a source-text round-trip (`parse` → `print` → re-`parse` → re-`print`, asserting the second printing is byte-identical to the first) rather than an AST-structural-equality check; this is the property that actually matters and is strictly harder to satisfy, so it subsumes the literal wording here
+
+---
+
+## Phase 3 — Parser (32 tasks)
+
+**Pratt core**
+- [x] 🔴 `Prec` enum ordered `None < Assign < Or < And < Equality < Comparison < Term < Factor < Unary < Call < Primary`
+- [x] 🔴 `TokenKind::infix_prec()` table — also assigns `DotDot` (range) a precedence (`Comparison`), a gap in the original design that surfaced once `for i in 0..10` needed to actually parse
+- [x] 🔴 `expr(min_prec)`: prefix (NUD) then loop absorbing infix (LED) while `prec > min_prec`
+- [x] 🔴 **Left-assoc recurses with `prec`; right-assoc with `prec.lower()`** — that one call is the entire difference
+- [x] 🔴 Prefix parsers: literals, identifier, `(` grouping, `-`/`!` unary, `[` list, `|`/`||` lambda, `if`, `match`, `{` block, struct literal
+- [x] 🔴 Infix parsers: all binary ops, assignment (right-assoc), `(` call, `[` index, `.` field
+- [x] 🔴 Assignment target validation: LHS must be `Var`, `Index`, or `Field`; anything else is a targeted error
+
+**Statements**
+- [x] 🔴 `let` with optional `mut`, optional type annotation, required initializer — binds a single identifier only; pattern-destructuring `let` (e.g. `let Point { x, y } = p;`) is deferred to Phase 4, since it needs the resolver's slot allocation
+- [x] 🔴 `fn` with params, optional param types, optional return type, block body
+- [x] 🔴 `type` ADT declaration with `|`-separated variants and payload types
+- [x] 🔴 `struct` declaration with typed fields
+- [x] 🔴 `while`, `for … in`, `loop`, `break`, `continue`, `return`
+- [x] 🔴 Block expressions: `{ stmts…; tail_expr? }` — tail expression is the block's value
+- [x] 🔴 Semicolon rules: expression statements need `;` unless in tail position or the expr ends in `}`
+
+**Patterns**
+- [x] 🔴 Parse all pattern forms incl. list rest `[head, ..tail]` and or-patterns `A | B`
+- [x] 🔴 Match arms `pat => expr,` with optional guard `if cond`
+
+**Types**
+- [x] 🔴 Type syntax: `Int`, `[T]`, `(A, B) -> C`, `Name<Args>`, type variables
+
+**Error recovery ⭐**
+- [x] 🔴 `panicking: bool` flag; `error_at()` is a **no-op while panicking** (cascade suppression)
+- [x] 🔴 `synchronize()`: skip to the next `;` or statement-starting keyword or `}`
+- [x] 🔴 Emit `Expr::Error` / `Stmt::Error` placeholders so the tree stays complete
+- [x] 🔴 `expect(kind, msg)` producing a message naming what was expected and what was found
+- [x] 🔴 Delimiter matching: unclosed `(`/`{`/`[` reports at the **opening** delimiter with a secondary label at EOF
+- [x] 🔴 Recursion depth limit → clean "expression nested too deeply" error, never a stack overflow
+
+**Tests**
+- [x] 🔴 Precedence: `1 + 2 * 3` → `(1 + (2 * 3))`
+- [x] 🔴 Left-assoc: `1 - 2 - 3` → `((1 - 2) - 3)`
+- [x] 🔴 Right-assoc: `a = b = c` → `(a = (b = c))`
+- [x] 🔴 Unary binds tighter than binary: `-a + b` → `((-a) + b)`
+- [x] 🔴 Call binds tightest: `-f(x)` → `(-(f(x)))`
+- [x] 🔴 **Recovery: one missing `;` produces exactly ONE diagnostic** and the rest of the file still parses
+- [x] 🔴 Recovery: unclosed brace reports at the opener
+- [x] 🔴 Recovery: garbage in the middle of a file still yields valid nodes on both sides — required a real fix beyond the original design (`block_or_error`), since the naive `expect`-then-`block()` pattern would otherwise let a missing `{` swallow unrelated following code
+- [x] 🔴 `insta` snapshots for 20 representative programs
+- [ ] 🟡 Fuzz: arbitrary tokens → always terminates, always returns a tree
+
+---
+
+## Phase 4 — Resolver (22 tasks)
+
+- [ ] 🔴 `Scope { bindings: FxHashMap<Symbol, BindingInfo>, kind: ScopeKind }`
+- [ ] 🔴 `BindingInfo { slot, mutable, initialized, span, used }`
+- [ ] 🔴 Scope stack push/pop for blocks, function bodies, loop bodies, match arms
+- [ ] 🔴 Slot allocation: each local gets an index within its function frame; slots reused after scope exit
+- [ ] 🔴 `Resolution::{ Local { slot }, Upvalue { index }, Global { symbol } }` recorded per `Var` node
+- [ ] 🔴 **`initialized` flag**: `let x = x;` must error ("cannot use `x` in its own initializer"), not silently resolve to an outer `x`
+- [ ] 🔴 Assignment to non-`mut` binding → error with a help suggesting `let mut`
+- [ ] 🔴 Use of undeclared name → error, with **"did you mean …?"** via edit distance over in-scope names
+- [ ] 🔴 Shadowing allowed but noted when the shadowed binding is unused
+
+**Upvalues ⭐**
+- [ ] 🔴 `FunctionCtx { locals, upvalues: Vec<UpvalueDesc>, enclosing }`
+- [ ] 🔴 `resolve_upvalue(fn_idx, name)`: check enclosing function's locals → else recurse outward
+- [ ] 🔴 **Thread the capture through every intermediate function**, so a 3-deep capture creates an upvalue at each level
+- [ ] 🔴 `add_upvalue` deduplicates: the same variable captured twice reuses one index
+- [ ] 🔴 `UpvalueDesc { index, is_local }` — `is_local` distinguishes "capture from enclosing frame" from "capture from enclosing closure's upvalue"
+- [ ] 🔴 Mark captured locals so the compiler emits `OP_CLOSE_UPVALUE` at scope exit
+
+**Warnings**
+- [ ] 🟡 Unused variable (suppressed for `_`-prefixed names)
+- [ ] 🟡 Unused function / unused parameter
+- [ ] 🟡 Unreachable code after `return`/`break`/`continue`
+
+**Tests**
+- [ ] 🔴 Local resolves to the correct slot; nested scopes shadow correctly
+- [ ] 🔴 `let x = x;` errors
+- [ ] 🔴 Assignment to immutable errors
+- [ ] 🔴 Counter closure produces exactly one upvalue
+- [ ] 🔴 Triple-nested capture produces an upvalue chain at every level
+- [ ] 🔴 Two closures over the same variable share one upvalue index
+
+---
+
+## Phase 5 — Type Inference (34 tasks)
+
+**Types**
+- [ ] 🔴 `Ty::{ Int, Float, Bool, String, Unit, Var, Fun, List, Adt, Record }`
+- [ ] 🔴 `Scheme { vars: Vec<TyVarId>, ty: Ty }`
+- [ ] 🔴 `TyEnv` mapping `Symbol -> Scheme`, with scoping
+- [ ] 🔴 Union-find substitution store: `Vec<Option<Ty>>` indexed by `TyVarId`, with path compression
+- [ ] 🔴 `fresh() -> Ty::Var` and `resolve(ty)` following the substitution chain
+
+**Constraints with provenance ⭐**
+- [ ] 🔴 `Constraint { lhs, rhs, origin }`
+- [ ] 🔴 `Origin::{ IfBranches, CallArgument, BinaryOp, Annotation, MatchArms, Return, ListElement, WhileCond, IndexTarget }` — each carrying the relevant spans
+- [ ] 🔴 **Constraint generation is a separate pass from solving** — this is what makes errors good, and is the main departure from textbook Algorithm W
+- [ ] 🔴 Generate for every expression form
+
+**Unification**
+- [ ] 🔴 `unify(a, b, origin)` — resolve both, then match structurally
+- [ ] 🔴 Var-to-var, var-to-type binding
+- [ ] 🔴 **Occurs check** before binding: `a := a -> b` is an infinite type. Without this, `let f = |x| f(x)` hangs the compiler
+- [ ] 🔴 `Fun` arity mismatch → dedicated "expected N arguments, found M" error
+- [ ] 🔴 Structural recursion for `Fun`, `List`, `Adt`, `Record`
+- [ ] 🔴 Mismatch error formats **from the Origin**, labeling both contributing spans
+
+**Polymorphism**
+- [ ] 🔴 `generalize(env, ty)`: quantify free vars **not free in the environment**
+- [ ] 🔴 `instantiate(scheme)`: fresh var per quantified var
+- [ ] 🔴 Generalize at `let` and top-level `fn` only
+- [ ] 🔴 **Value restriction**: do not generalize mutable bindings or general applications — `let mut r = [];` generalizing to `∀a.[a]` is unsound
+- [ ] 🔴 Recursive functions: bind a monomorphic type var before inferring the body, generalize after
+
+**Annotations & ADTs**
+- [ ] 🔴 Annotations become constraints, not shortcuts — they must be *checked*, not trusted
+- [ ] 🔴 ADT declarations register constructors as functions: `Circle : Float -> Shape`
+- [ ] 🔴 Struct literals and field access; missing field → error naming it
+- [ ] 🔴 Pattern typing: patterns constrain the scrutinee and bind variables at the right types
+
+**Diagnostics**
+- [ ] 🔴 Type mismatch showing both types with both spans labeled
+- [ ] 🔴 Infinite type error with a readable explanation
+- [ ] 🔴 Pretty-print types with minimal parens and readable var names (`a`, `b`, … not `t47`)
+- [ ] 🟡 "expected `Int`, found `Float`" suggests an explicit conversion
+
+**Trace output (for the playground) ⭐**
+- [ ] 🟡 `InferenceTrace { constraints: Vec<(Constraint, Span)>, steps: Vec<UnifyStep>, final_env }`
+- [ ] 🟡 `UnifyStep { lhs, rhs, result_substitution, origin }` — the data behind Panel 4
+
+**Tests**
+- [ ] 🔴 `let x = 42` infers `Int`
+- [ ] 🔴 `fn identity(x) { x }` infers `∀a. a -> a`
+- [ ] 🔴 `identity(1)` and `identity("s")` both typecheck — **let-polymorphism works**
+- [ ] 🔴 Occurs check: `let f = |x| f(x)` → infinite type error, no hang
+- [ ] 🔴 `if` branch mismatch → error labeling both branches
+- [ ] 🔴 Arity mismatch → correct message
+- [ ] 🔴 Value restriction: mutable binding does not generalize
+
+---
+
+## Phase 6 — Exhaustiveness Checking (14 tasks)
+
+- [ ] 🔴 `PatMatrix` — rows of patterns
+- [ ] 🔴 `is_useful(matrix, pattern_vec, ty)` — Maranget's usefulness algorithm
+- [ ] 🔴 Specialization `S(c, matrix)` for constructor `c`
+- [ ] 🔴 Default matrix `D(matrix)` for wildcards
+- [ ] 🔴 Constructor sets per type: ADT variants, bool `{true,false}`, list `{[], [_,..]}`; infinite for Int/String/Float
+- [ ] 🔴 Witness generation: when `_` is still useful, produce concrete missing patterns
+- [ ] 🔴 Non-exhaustive → error **naming the missing patterns**
+- [ ] 🔴 Unreachable arm → warning (falls out of the same algorithm)
+- [ ] 🔴 Or-patterns expand into multiple rows
+- [ ] 🔴 Guards: an arm with a guard **never** contributes to exhaustiveness (the guard may be false)
+- [ ] 🔴 Nested patterns handled recursively
+- [ ] 🔴 Test: missing one ADT variant → named in the error
+- [ ] 🔴 Test: `_` arm makes any match exhaustive
+- [ ] 🔴 Test: arm after `_` reported unreachable
+
+---
+
+## Phase 7 — Tree-Walking Interpreter (20 tasks)
+
+- [ ] 🔴 `Value::{ Int, Float, Bool, Nil, Str(Rc<String>), List(Rc<RefCell<Vec>>), Closure(Rc<Closure>), Native, Adt, Record }`
+- [ ] 🔴 `Env { values: FxHashMap<Symbol, Value>, parent: Option<Rc<RefCell<Env>>> }`
+- [ ] 🔴 **`Flow::{ Normal, Return, Break, Continue }` threaded through return types** — never `panic!`/`catch_unwind` for control flow (breaks WASM and stepping)
+- [ ] 🔴 `eval_expr` for every `Expr` variant
+- [ ] 🔴 `exec_stmt` for every `Stmt` variant
+- [ ] 🔴 Closures capture `Rc<RefCell<Env>>`; mutation through a closure is visible to its siblings
+- [ ] 🔴 Pattern matching at runtime with binding extraction
+- [ ] 🔴 Native functions: `print`, `len`, `push`, `clock`, `str`, `int`, `float`, `type_of`
+- [ ] 🔴 Runtime errors carry spans and render as full diagnostics
+- [ ] 🔴 Call-stack depth limit → "stack overflow" diagnostic with the call chain, not a process crash
+- [ ] 🔴 Integer overflow → checked, reported with the operand values
+- [ ] 🔴 Division by zero → diagnostic
+- [ ] 🟡 Step mode: `eval_step()` yielding after each node, with a snapshot of env + current node (drives Panel 6)
+- [ ] 🔴 Test: arithmetic, comparison, logical short-circuit
+- [ ] 🔴 Test: closures capture and mutate correctly
+- [ ] 🔴 Test: recursion (`fib`, `fact`)
+- [ ] 🔴 Test: all loop forms with `break`/`continue`
+- [ ] 🔴 Test: pattern matching with destructuring
+- [ ] 🔴 Test: shared mutable capture between two closures
+- [ ] 🔴 Test: runtime error spans point at the right expression
+
+---
+
+## Phase 8 — Bytecode & Compiler (28 tasks)
+
+- [ ] 🔴 `Op` enum `#[repr(u8)]` with all ~35 opcodes
+- [ ] 🔴 `Chunk { code: Vec<u8>, constants: Vec<Value>, lines: Vec<(u32, u32)> }`
+- [ ] 🔴 **Line info run-length encoded** — one `u32` per byte doubles chunk size for nothing
+- [ ] 🔴 Constant pool with deduplication
+- [ ] 🔴 `disassemble_chunk` / `disassemble_instruction` — with operand names resolved, not raw indices
+
+**Compiler**
+- [ ] 🔴 Walk the typed AST, emit bytecode; single pass, no separate IR
+- [ ] 🔴 Literals → `OP_CONSTANT` (with `OP_NIL`/`OP_TRUE`/`OP_FALSE` fast paths)
+- [ ] 🔴 Locals → `OP_GET_LOCAL`/`OP_SET_LOCAL` with the resolver's slot
+- [ ] 🔴 Upvalues → `OP_GET_UPVALUE`/`OP_SET_UPVALUE`
+- [ ] 🔴 Globals → `OP_DEFINE_GLOBAL`/`OP_GET_GLOBAL`/`OP_SET_GLOBAL`
+- [ ] 🔴 `emit_jump` placeholder + `patch_jump` backpatching
+- [ ] 🔴 `if/else` → `JUMP_IF_FALSE` + `JUMP`; both arms leave exactly one value on the stack
+- [ ] 🔴 `while` → condition, `JUMP_IF_FALSE`, body, `LOOP` back
+- [ ] 🔴 `for … in range` desugared to a while loop with a hidden counter local
+- [ ] 🔴 `break`/`continue` → forward/backward jumps, patched at loop end; track a loop stack
+- [ ] 🔴 `&&`/`||` short-circuit via jumps, not a call
+- [ ] 🔴 Function compilation into its own `Chunk`; `OP_CLOSURE` with an upvalue descriptor list inline in the bytecode
+- [ ] 🔴 **`OP_CLOSE_UPVALUE` emitted at scope exit for every captured local**
+- [ ] 🔴 `OP_RETURN`; implicit `nil` return when a function falls off the end
+- [ ] 🔴 Pattern matching compiled to `TEST_VARIANT` + jump chains + `DESTRUCTURE`
+- [ ] 🔴 Assert stack effect balance per statement (debug builds) — catches a whole class of codegen bugs immediately
+- [ ] 🟡 Constant folding for literal arithmetic
+- [ ] 🟡 Peephole: `NOT` + `JUMP_IF_FALSE` → `JUMP_IF_TRUE`
+- [ ] 🔴 Test: disassembly snapshots for 15 programs
+- [ ] 🔴 Test: jump offsets correct for nested if/while
+- [ ] 🔴 Test: `break` inside a nested loop targets the right loop
+- [ ] 🔴 Test: `OP_CLOSE_UPVALUE` emitted exactly where a captured local dies
+- [ ] 🔴 **Start the conformance suite here** — every program written from now on goes in `tests/conformance/`
+
+---
+
+## Phase 9 — Virtual Machine (26 tasks)
+
+- [ ] 🔴 `Vm { stack, frames, globals, open_upvalues, gc }`
+- [ ] 🔴 `CallFrame { closure, ip, slot_base }`
+- [ ] 🔴 Dispatch loop: `match self.read_op()`
+- [ ] 🔴 `read_u8` / `read_u16` / `read_constant` with `ip` advance
+- [ ] 🔴 Stack push/pop/peek with a depth limit
+- [ ] 🔴 Arithmetic with type checks; runtime type error → diagnostic with the operand types
+- [ ] 🔴 `OP_GET_LOCAL` = `stack[frame.slot_base + slot]` — an **indexed array access**, which is the whole speed story vs the tree-walker
+- [ ] 🔴 Comparison and equality across all value types
+- [ ] 🔴 Jump instructions
+- [ ] 🔴 `OP_CALL`: arity check, push a `CallFrame`
+- [ ] 🔴 `OP_RETURN`: **close upvalues at `slot_base` BEFORE truncating the stack** — otherwise closures hold dangling slots
+- [ ] 🔴 `OP_CLOSURE`: read upvalue descriptors, capture from frame locals or enclosing upvalues
+- [ ] 🔴 `capture_upvalue(slot)`: search `open_upvalues` (sorted by slot descending) and reuse if present — **two closures over the same variable must share one cell**
+- [ ] 🔴 `close_upvalues(from)`: move Open→Closed, hoisting values from stack to heap
+- [ ] 🔴 Native function calls
+- [ ] 🔴 Runtime errors with a **full stack trace**: function names and line numbers from each frame's `ip`
+- [ ] 🟡 Step mode: `step()` executing one instruction and returning the full VM state
+- [ ] 🔵 NaN boxing behind a feature flag: `#[repr(transparent)] NanValue(u64)`, QNAN tagging, pointer packing
+- [ ] 🔵 Computed-goto-style dispatch via a jump table
+- [ ] 🔴 Test: arithmetic, comparison, logic
+- [ ] 🔴 Test: function calls, recursion, correct return values
+- [ ] 🔴 Test: closure counter increments across calls
+- [ ] 🔴 Test: upvalue closed at scope exit, value survives
+- [ ] 🔴 Test: shared capture — two closures see each other's mutations
+- [ ] 🔴 Test: stack overflow produces a diagnostic with a stack trace, not a crash
+- [ ] 🔴 **Test: every conformance program produces identical output to the tree-walker**
+
+---
+
+## Phase 10 — Garbage Collector (20 tasks)
+
+- [ ] 🔴 `ObjHeader { marked: bool, next: Option<Gc<Obj>>, kind: ObjKind }`
+- [ ] 🔴 Intrusive linked list of all allocations
+- [ ] 🔴 `Gc<T>` handle (Copy) with deref
+- [ ] 🔴 `allocate<T>()` tracking `bytes_allocated`, triggering GC past `next_gc`
+- [ ] 🔴 `mark_roots`: stack, call frames, open upvalues, globals
+- [ ] 🔴 **`mark_compiler_roots`** — functions under construction are unreachable from the VM. Forgetting this is the classic GC bug and it manifests as corruption far from the cause
+- [ ] 🔴 Tri-color marking with a gray worklist (`gray_stack: Vec<Gc<Obj>>`)
+- [ ] 🔴 `blacken_object`: trace children per object kind
+- [ ] 🔴 Sweep: walk the list, free unmarked, unmark survivors
+- [ ] 🔴 `next_gc = bytes_allocated * GROWTH_FACTOR` (2) after each collection
+- [ ] 🔴 String interning table entries as weak references — interned strings must be collectable
+- [ ] 🔴 **`gc-stress` feature: collect on every single allocation.** GC bugs are nondeterministic; stress mode makes them deterministic
+- [ ] 🔴 `gc-log` feature tracing allocate/mark/sweep with sizes
+- [ ] 🟡 GC stats exposed: collections, bytes freed, pause duration, live object count
+- [ ] 🔴 Test: unreachable object collected
+- [ ] 🔴 Test: reachable object survives 100 collections
+- [ ] 🔴 Test: cyclic structure collected when the cycle becomes unreachable
+- [ ] 🔴 Test: closure keeps its captured upvalue alive
+- [ ] 🔴 **Test: entire conformance suite passes under `gc-stress`** — this is the real GC test
+- [ ] 🟡 Test: heap size stays bounded in a long-running allocation loop
+
+---
+
+## Phase 11 — Formatter (10 tasks)
+
+- [ ] 🟡 Wadler-style pretty printer: `Doc::{ Text, Line, Nest, Concat, Group }`
+- [ ] 🟡 Layout algorithm respecting a target width (default 100)
+- [ ] 🟡 Format every AST node; preserve comments from the trivia channel
+- [ ] 🟡 Preserve blank lines between top-level items (max 1)
+- [ ] 🟡 Group binary operator chains; break consistently at the same precedence level
+- [ ] 🟡 `ember fmt --check` exits non-zero on diff
+- [ ] 🟡 **Idempotence test: `fmt(fmt(x)) == fmt(x)`**
+- [ ] 🟡 **Semantics test: `run(x) == run(fmt(x))`** across the conformance suite
+- [ ] 🟡 Comment attachment: leading, trailing, and inline comments land in sensible places
+- [ ] 🟢 Snapshot tests over 20 files
+
+---
+
+## Phase 12 — Conformance & Test Infrastructure (16 tasks)
+
+**The project's spine.**
+
+- [ ] 🔴 `tests/conformance/*.em` with paired `.expected` files
+- [ ] 🔴 Harness runs each program on **both backends** and asserts byte-identical stdout
+- [ ] 🔴 Harness also asserts identical **error output** for failing programs
+- [ ] 🔴 Harness runs everything a third time under `gc-stress`
+- [ ] 🔴 CI fails on any divergence — this single check is what validates the whole two-backend design
+- [ ] 🔴 Conformance programs covering: arithmetic, strings, lists, closures, recursion, ADTs+match, structs, generics, all loops, shadowing, higher-order functions, mutual recursion, deep recursion, error paths
+- [ ] 🔴 `tests/diagnostics/*.em` + `.stderr` snapshots — error messages are a *product surface* and must not regress silently
+- [ ] 🔴 `insta` snapshots for AST and disassembly
+- [ ] 🔴 Property test: parser round-trip
+- [ ] 🔴 Property test: lexer span tiling
+- [ ] 🟡 Property test: formatter idempotence over generated ASTs
+- [ ] 🟡 Fuzz targets: lexer, parser, type checker (no panics)
+- [ ] 🟡 `criterion` benchmarks: fib, loops, closures, list ops, string ops — both backends
+- [ ] 🟡 Allocation counting via a custom `GlobalAlloc` wrapper for the comparison panel
+- [ ] 🟡 Benchmark regression gate in CI (>10% slowdown fails)
+- [ ] 🟢 Coverage reporting
+
+---
+
+## Phase 13 — CLI & REPL (16 tasks)
+
+- [ ] 🔴 `clap` derive; all subcommands from SPEC §16
+- [ ] 🔴 `run FILE --backend tree|vm --time --gc-stress`
+- [ ] 🔴 `check FILE` — diagnostics only, exit code reflects errors
+- [ ] 🔴 `tokens`, `ast --typed --json`, `types`, `disasm`
+- [ ] 🔴 **`trace FILE`** — full inference derivation: constraints, unification steps, substitution evolution
+- [ ] 🔴 `bench FILE` — both backends, timing + allocations + a speedup ratio
+- [ ] 🔴 `explain E0308` — extended error documentation from a static registry
+- [ ] 🔴 REPL with `rustyline`: history, multi-line continuation on unbalanced delimiters
+- [ ] 🔴 REPL persists the environment across inputs; `:type expr`, `:ast expr`, `:disasm expr`, `:reset`, `:load file`
+- [ ] 🔴 REPL prints inferred types alongside values when `--show-types`
+- [ ] 🟡 `debug FILE` — TUI stepper (ratatui): source, stack, locals, upvalues, next instruction
+- [ ] 🔴 Colored output honoring `NO_COLOR` and non-TTY detection
+- [ ] 🔴 Exit codes: 0 ok, 1 runtime error, 2 compile error, 3 usage
+- [ ] 🔴 Shell completions
+- [ ] 🟢 `--emit tokens|ast|hir|bytecode` pipeline dumping
+- [ ] 🟢 Timing breakdown per phase with `--time`
+
+---
+
+## Phase 14 — LSP Server (20 tasks)
+
+- [ ] 🟡 `tower-lsp` scaffold; stdio transport
+- [ ] 🟡 `initialize` advertising all capabilities from SPEC §13
+- [ ] 🟡 Document store: `Arc<RwLock<FxHashMap<Url, Analysis>>>`
+- [ ] 🟡 `didOpen` / `didChange` (incremental) / `didClose`
+- [ ] 🟡 Re-analyze on change; debounce 150 ms
+- [ ] 🟡 `publishDiagnostics` — the **same `Diagnostic` type** the CLI renders
+- [ ] 🟡 `hover`: inferred type at the span, plus doc comment if present
+- [ ] 🟡 **`inlayHint`: inferred types on un-annotated `let`s and params** — where HM visibly earns its keep
+- [ ] 🟡 `definition` via the resolver's `Resolution` map
+- [ ] 🟡 `references` via a reverse index
+- [ ] 🟡 `documentSymbol` outline
+- [ ] 🟡 `rename` with validation (new name must be a valid identifier, must not collide)
+- [ ] 🟡 `completion`: in-scope bindings, keywords, ADT variants, struct fields after `.`
+- [ ] 🟡 `semanticTokens`: distinguish local / param / global / function / type / variant
+- [ ] 🟡 `codeAction` from `Help.suggestion` → `TextEdit`
+- [ ] 🟡 `formatting` via the Phase 11 formatter
+- [ ] 🟡 `signatureHelp` during call argument entry
+- [ ] 🟢 VS Code extension: syntax file, client, launch config
+- [ ] 🟡 Cancellation handling for in-flight requests
+- [ ] 🟡 Test: LSP protocol round-trip for each capability
+
+---
+
+## Phase 15 — WASM Bindings (12 tasks)
+
+- [ ] 🔴 `crates/ember-wasm` with `wasm-bindgen`
+- [ ] 🔴 `compile_and_run(src, backend, opts) -> RunResult { output, diagnostics, timing, stats }`
+- [ ] 🔴 `tokenize(src)` → tokens with spans and kinds
+- [ ] 🔴 `parse_ast(src)` → serialized tree with per-node spans
+- [ ] 🔴 `type_info(src)` → span→type map + inference trace
+- [ ] 🔴 `disassemble(src)` → instructions with source-line mapping
+- [ ] 🔴 `Debugger` class: `new`, `step`, `step_over`, `run_to(line)`, `state()`
+- [ ] 🔴 `state()` returns stack, frames, locals, upvalues (open/closed), heap graph, ip, current line
+- [ ] 🔴 Output capture: `print` writes to a buffer, not stdout
+- [ ] 🔴 Execution step budget so an infinite loop can't hang the browser tab
+- [ ] 🔴 `wasm-pack build --target web --release`; `wasm-opt -Oz`
+- [ ] 🔴 Bundle < 900 KB gzipped
+
+---
+
+## Phase 16 — Playground Frontend (34 tasks)
+
+**Foundation**
+- [ ] 🔴 WASM init with a loading state; zustand store for source + all derived artifacts
+- [ ] 🔴 Debounced recompile (200 ms) on edit; all panels update from one pipeline run
+- [ ] 🔴 Resizable panel layout (shadcn `resizable`), persisted to localStorage
+
+**Panel 1 — Editor**
+- [ ] 🔴 CodeMirror 6 with a custom `ember` StreamLanguage **driven by the WASM lexer** — editor and compiler agree on tokens by construction
+- [ ] 🔴 Syntax highlighting via `@lezer/highlight` tags mapped from our `TokenKind`
+- [ ] 🔴 Diagnostics as lint markers; hover shows the full message + notes + help
+- [ ] 🔴 **Inlay hints** for inferred types (CodeMirror decorations)
+- [ ] 🔴 Current-line highlight during debugging
+- [ ] 🔴 Bidirectional AST↔source selection linking
+- [ ] 🟡 Example gallery; share-via-URL with compressed source in the fragment
+- [ ] 🟡 Vim keybinding toggle
+
+**Panel 2 — Tokens**
+- [ ] 🔴 Horizontal chip strip, colored by kind, showing text + span
+- [ ] 🔴 Hover highlights the source range
+
+**Panel 3 — AST ⭐**
+- [ ] 🔴 D3 collapsible tree; node label = variant, expandable fields
+- [ ] 🔴 Click node → highlight source span
+- [ ] 🔴 Raw / typed toggle (typed shows the inferred type on every node)
+- [ ] 🟡 Search and zoom/pan
+
+**Panel 4 — Type Inference Trace ⭐**
+- [ ] 🟡 Constraint list with origin and spans
+- [ ] 🟡 Unification stepper: prev/next, showing the two types and the resulting substitution
+- [ ] 🟡 Live substitution map (`t3 ↦ Int`, …)
+- [ ] 🟡 Final schemes per binding with quantifiers rendered (`∀a. a → a`)
+- [ ] 🟡 Hovering a constraint highlights its source span
+
+**Panel 5 — Bytecode**
+- [ ] 🔴 Disassembly with offset, line, opcode, resolved operands
+- [ ] 🔴 Line ↔ source linking
+- [ ] 🔴 Current instruction highlighted during debugging
+- [ ] 🟡 Stack-effect annotation per instruction
+
+**Panel 6 — Runtime State (Debugger) ⭐**
+- [ ] 🔴 Controls: step, step-over, run-to-line, continue, reset
+- [ ] 🔴 Value stack with frame boundaries marked
+- [ ] 🔴 Call frames with function, ip, slot base
+- [ ] 🔴 Locals per frame by slot
+- [ ] 🔴 **Upvalues: open (arrow pointing at a stack slot) vs closed (holding a heap value)** — the single clearest explanation of closures anyone will see
+- [ ] 🟡 D3 heap graph: objects, reference edges, GC roots outlined
+- [ ] 🟡 GC stats + animated mark/sweep phases
+
+**Panel 7 — Backend Comparison ⭐**
+- [ ] 🔴 Run both backends; table of time, allocations, peak heap, instruction count
+- [ ] 🔴 **Output-equality assertion badge** — green if identical, red if diverged
+- [ ] 🟡 Recharts: runtime vs input size for both backends
+- [ ] 🟡 Speedup ratio callout
+
+**Panel 8 — Pipeline**
+- [ ] 🟡 Stage strip with per-phase timing; click to jump to that panel
+
+---
+
+## Phase 17 — Docs & Polish (14 tasks)
+
+- [ ] 🟢 `docs/LANGUAGE.md` — full language reference with examples
+- [ ] 🟢 `docs/IMPLEMENTATION.md` — architecture walkthrough, phase by phase
+- [ ] 🟢 `docs/ERRORS.md` — every error code with cause, example, and fix (backs `ember explain`)
+- [ ] 🟢 `docs/TUTORIAL.md` — build a small program, seeing every stage
+- [ ] 🟢 `README.md` — the language, the two-backend thesis, quickstart, playground link
+- [ ] 🟢 `examples/`: fib, closures, ADTs, generics, quicksort, brainfuck interpreter, JSON parser (all in `ember`)
+- [ ] 🟡 Error codes assigned and stable
+- [ ] 🟡 "Did you mean?" suggestions for misspelled identifiers, fields, and variants
+- [ ] 🟡 Benchmark results table in the README with real numbers
+- [ ] 🟡 `cargo clippy -- -D warnings`, `cargo fmt --check`, `bun run tsc --noEmit` all clean
+- [ ] 🔵 Constant folding + dead code elimination pass
+- [ ] 🔵 Tail-call optimization in the VM
+- [ ] 🔵 Module system with `import`
+- [ ] 🔵 Trait/typeclass system
+
+---
+
+## Summary
+
+| Phase | Tasks |
+|---|---|
+| 0. Bootstrap | 12 |
+| 1. Lexer | 24 |
+| 2. AST | 14 |
+| 3. Parser | 32 |
+| 4. Resolver | 22 |
+| 5. Type Inference | 34 |
+| 6. Exhaustiveness | 14 |
+| 7. Tree-Walking Interpreter | 20 |
+| 8. Bytecode & Compiler | 28 |
+| 9. Virtual Machine | 26 |
+| 10. Garbage Collector | 20 |
+| 11. Formatter | 10 |
+| 12. Conformance & Tests | 16 |
+| 13. CLI & REPL | 16 |
+| 14. LSP Server | 20 |
+| 15. WASM Bindings | 12 |
+| 16. Playground | 34 |
+| 17. Docs & Polish | 14 |
+| **TOTAL** | **368** |
