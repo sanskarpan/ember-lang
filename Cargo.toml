@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ember-span",
+    "crates/ember-diag",
+    "crates/ember-lexer",
+    "crates/ember-ast",
+    "crates/ember-parser",
+    "crates/ember-resolve",
+    "crates/ember-types",
+    "crates/ember-tree",
+    "crates/ember-bytecode",
+    "crates/ember-compile",
+    "crates/ember-vm",
+    "crates/ember-gc",
+    "crates/ember-fmt",
+    "crates/ember-lsp",
+    "crates/ember-wasm",
+    "crates/ember-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
