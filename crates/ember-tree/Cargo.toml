@@ -1,0 +1,6 @@
+[package]
+name = "ember-tree"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
