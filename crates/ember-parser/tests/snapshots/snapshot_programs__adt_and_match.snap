@@ -1,0 +1,6 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+type Shape = Circle | Rect | Point
+fn area(s) (block match s { Circle(r) => r, Rect(w, h) => w, Point => 0 })

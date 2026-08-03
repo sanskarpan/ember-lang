@@ -1,0 +1,6 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+fn is_even(n) (block (if (n == 0) (block true) (block (call is_odd (n - 1)))))
+fn is_odd(n) (block (if (n == 0) (block false) (block (call is_even (n - 1)))))

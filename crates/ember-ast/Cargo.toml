@@ -1,0 +1,10 @@
+[package]
+name = "ember-ast"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ember-span = { path = "../ember-span" }
+ember-lexer = { path = "../ember-lexer" }
+string-interner = "0.17"
+serde = { version = "1", features = ["derive"] }

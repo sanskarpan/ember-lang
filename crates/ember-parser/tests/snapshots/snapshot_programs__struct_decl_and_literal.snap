@@ -1,0 +1,6 @@
+---
+source: crates/ember-parser/tests/snapshot_programs.rs
+expression: dump(src)
+---
+struct Point { x, y }
+let p = Point { x: 1, y: 2 };

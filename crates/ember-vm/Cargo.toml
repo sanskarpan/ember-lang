@@ -1,0 +1,6 @@
+[package]
+name = "ember-vm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
