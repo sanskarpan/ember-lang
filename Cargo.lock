@@ -187,6 +187,7 @@ dependencies = [
  "ember-diag",
  "ember-lexer",
  "ember-parser",
+ "ember-resolve",
  "ember-span",
 ]
 
@@ -239,6 +240,13 @@ dependencies = [
 [[package]]
 name = "ember-resolve"
 version = "0.1.0"
+dependencies = [
+ "ember-ast",
+ "ember-diag",
+ "ember-parser",
+ "ember-span",
+ "rustc-hash",
+]
 
 [[package]]
 name = "ember-span"
