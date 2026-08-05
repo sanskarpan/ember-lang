@@ -2,11 +2,13 @@ use crate::expr::Expr;
 use crate::idx::Idx;
 use crate::interner::Symbol;
 use crate::ty::TypeExpr;
+use ember_span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: Symbol,
     pub ty: Option<Idx<TypeExpr>>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
