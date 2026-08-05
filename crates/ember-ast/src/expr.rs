@@ -37,7 +37,7 @@ pub enum Expr {
         name: Symbol,
     },
     Lambda {
-        params: Vec<Symbol>,
+        params: Vec<crate::stmt::Param>,
         body: Idx<Expr>,
     },
     If {
