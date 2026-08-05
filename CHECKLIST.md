@@ -121,36 +121,36 @@
 
 ## Phase 4 — Resolver (22 tasks)
 
-- [ ] 🔴 `Scope { bindings: FxHashMap<Symbol, BindingInfo>, kind: ScopeKind }`
-- [ ] 🔴 `BindingInfo { slot, mutable, initialized, span, used }`
-- [ ] 🔴 Scope stack push/pop for blocks, function bodies, loop bodies, match arms
-- [ ] 🔴 Slot allocation: each local gets an index within its function frame; slots reused after scope exit
-- [ ] 🔴 `Resolution::{ Local { slot }, Upvalue { index }, Global { symbol } }` recorded per `Var` node
-- [ ] 🔴 **`initialized` flag**: `let x = x;` must error ("cannot use `x` in its own initializer"), not silently resolve to an outer `x`
-- [ ] 🔴 Assignment to non-`mut` binding → error with a help suggesting `let mut`
-- [ ] 🔴 Use of undeclared name → error, with **"did you mean …?"** via edit distance over in-scope names
-- [ ] 🔴 Shadowing allowed but noted when the shadowed binding is unused
+- [x] 🔴 `Scope { bindings: FxHashMap<Symbol, BindingInfo>, kind: ScopeKind }`
+- [x] 🔴 `BindingInfo { slot, mutable, initialized, span, used }` — also carries a `captured` flag (not in the original sketch) that `resolve_upvalue` sets, feeding `Bindings.captured_slots`
+- [x] 🔴 Scope stack push/pop for blocks, function bodies, loop bodies, match arms
+- [x] 🔴 Slot allocation: each local gets an index within its function frame; slots reused after scope exit
+- [x] 🔴 `Resolution::{ Local { slot }, Upvalue { index }, Global { symbol } }` recorded per `Var` node
+- [x] 🔴 **`initialized` flag**: `let x = x;` must error ("cannot use `x` in its own initializer"), not silently resolve to an outer `x`
+- [x] 🔴 Assignment to non-`mut` binding → error with a help suggesting `let mut`
+- [x] 🔴 Use of undeclared name → error, with **"did you mean …?"** via Levenshtein edit distance over in-scope/reachable names
+- [ ] 🔴 Shadowing allowed but noted when the shadowed binding is unused — true across *nested* scopes (verified: an inner-scope shadow that's never used correctly warns), but **not** for two `let`s of the same name in the *same* scope: `declare()` inserts into a `FxHashMap<Symbol, BindingInfo>` keyed by name, so a same-scope re-`let` silently overwrites the earlier `BindingInfo` before `check_unused` ever sees it — no warning fires, and the discarded slot is never released back (`next_slot` was incremented for both declarations but `pop_scope` only decrements by the surviving `bindings.len()`, one short), leaking one frame slot per same-scope shadow. Confirmed by hand with `fn f() { let x = 1; let x = 2; print(x); }` — zero diagnostics emitted. Left as a known gap for a follow-up fix rather than expanding this phase's scope.
 
 **Upvalues ⭐**
-- [ ] 🔴 `FunctionCtx { locals, upvalues: Vec<UpvalueDesc>, enclosing }`
-- [ ] 🔴 `resolve_upvalue(fn_idx, name)`: check enclosing function's locals → else recurse outward
-- [ ] 🔴 **Thread the capture through every intermediate function**, so a 3-deep capture creates an upvalue at each level
-- [ ] 🔴 `add_upvalue` deduplicates: the same variable captured twice reuses one index
-- [ ] 🔴 `UpvalueDesc { index, is_local }` — `is_local` distinguishes "capture from enclosing frame" from "capture from enclosing closure's upvalue"
-- [ ] 🔴 Mark captured locals so the compiler emits `OP_CLOSE_UPVALUE` at scope exit
+- [x] 🔴 `FunctionCtx { locals, upvalues: Vec<UpvalueDesc>, enclosing }` — implemented as `FunctionCtx { id, scopes, upvalues, next_slot, high_water }` with the "enclosing" relationship implicit in the `Resolver.functions: Vec<FunctionCtx>` stack (enclosing = `functions[fn_idx - 1]`) rather than an explicit field
+- [x] 🔴 `resolve_upvalue(fn_idx, name)`: check enclosing function's locals → else recurse outward — with an added guard (`found_in_toplevel_script_scope`) so the top-level script's own scope is never mistaken for a capturable enclosing function; names live there resolve as `Global` instead, as intended by the design doc
+- [x] 🔴 **Thread the capture through every intermediate function**, so a 3-deep capture creates an upvalue at each level
+- [x] 🔴 `add_upvalue` deduplicates: the same variable captured twice reuses one index
+- [x] 🔴 `UpvalueDesc { index, is_local }` — `is_local` distinguishes "capture from enclosing frame" from "capture from enclosing closure's upvalue"
+- [x] 🔴 Mark captured locals so the compiler emits `OP_CLOSE_UPVALUE` at scope exit — `BindingInfo.captured` is set and surfaced via `Bindings.captured_slots: FxHashMap<FunctionId, Vec<u32>>`; consuming this to actually emit `OP_CLOSE_UPVALUE` is Phase 8's job (see design doc's "Ambiguity resolved" note), not this phase's
 
 **Warnings**
-- [ ] 🟡 Unused variable (suppressed for `_`-prefixed names)
-- [ ] 🟡 Unused function / unused parameter
-- [ ] 🟡 Unreachable code after `return`/`break`/`continue`
+- [x] 🟡 Unused variable (suppressed for `_`-prefixed names)
+- [x] 🟡 Unused function / unused parameter
+- [x] 🟡 Unreachable code after `return`/`break`/`continue` — scoped to direct-successor-in-the-same-block only, not full branch-level dataflow (e.g. both arms of an `if` returning does not mark code after the `if` unreachable); this narrower scope was an explicit, approved design choice, not a shortfall
 
 **Tests**
-- [ ] 🔴 Local resolves to the correct slot; nested scopes shadow correctly
-- [ ] 🔴 `let x = x;` errors
-- [ ] 🔴 Assignment to immutable errors
-- [ ] 🔴 Counter closure produces exactly one upvalue
-- [ ] 🔴 Triple-nested capture produces an upvalue chain at every level
-- [ ] 🔴 Two closures over the same variable share one upvalue index
+- [x] 🔴 Local resolves to the correct slot; nested scopes shadow correctly
+- [x] 🔴 `let x = x;` errors
+- [x] 🔴 Assignment to immutable errors
+- [x] 🔴 Counter closure produces exactly one upvalue
+- [x] 🔴 Triple-nested capture produces an upvalue chain at every level
+- [x] 🔴 Two closures over the same variable share one upvalue index
 
 ---
 

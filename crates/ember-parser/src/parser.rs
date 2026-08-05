@@ -577,6 +577,7 @@ impl<'src> Parser<'src> {
                 params.push(Param {
                     name: p_name,
                     ty: p_ty,
+                    span: p_tok.span,
                 });
                 if self.peek().kind == TokenKind::Comma {
                     self.advance();
@@ -771,7 +772,7 @@ impl<'src> Parser<'src> {
             .alloc_expr(Expr::If { cond, then_, else_ }, if_tok.span.to(end_span))
     }
 
-    fn lambda_params(&mut self, open: Token) -> Vec<ember_ast::Symbol> {
+    fn lambda_params(&mut self, open: Token) -> Vec<Param> {
         let mut params = Vec::new();
         if self.peek().kind != TokenKind::Pipe {
             loop {
@@ -782,7 +783,12 @@ impl<'src> Parser<'src> {
                     );
                 } else {
                     let text = self.text(p.span).to_string();
-                    params.push(self.interner.intern(&text));
+                    let sym = self.interner.intern(&text);
+                    params.push(Param {
+                        name: sym,
+                        ty: None,
+                        span: p.span,
+                    });
                 }
                 if self.peek().kind == TokenKind::Comma {
                     self.advance();
@@ -1426,6 +1432,36 @@ mod tests {
                 assert!(ret_ty.is_none());
             }
             other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fn_param_has_a_span_covering_its_name() {
+        let (ast, _interner, stmt, diags) = parse_stmt_from_str("fn f(x: Int) { x }");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+        match ast.stmt(stmt) {
+            Stmt::Fn { params, .. } => {
+                assert_eq!(params[0].span, Span::new(5, 6)); // the "x" in "fn f(x: Int)"
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lambda_params_are_now_full_params_with_spans() {
+        let (ast, interner, e, diags) = parse_expr_from_str("|x, y| x");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+        match ast.expr(e) {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(interner.resolve(params[0].name), "x");
+                assert_eq!(params[0].span, Span::new(1, 2));
+                assert!(
+                    params[0].ty.is_none(),
+                    "lambda params never have type annotations"
+                );
+            }
+            other => panic!("expected Lambda, got {other:?}"),
         }
     }
 

@@ -19,6 +19,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print each Var's resolution (local/upvalue/global), per-function
+    /// upvalue counts, and any resolver diagnostics.
+    Resolve { file: String },
 }
 
 fn main() -> ExitCode {
@@ -26,6 +29,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Tokens { file } => run_tokens(&file),
         Command::Ast { file, json } => run_ast(&file, json),
+        Command::Resolve { file } => run_resolve(&file),
     }
 }
 
@@ -65,6 +69,43 @@ fn run_ast(path: &str, json: bool) -> ExitCode {
     for s in &stmts {
         println!("{}", ember_ast::print_stmt(&ast, &interner, *s));
     }
+    print_diagnostics(&diags, path, &src)
+}
+
+fn run_resolve(path: &str) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::from(3);
+    };
+    let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(&src);
+    if !parse_diags.is_empty() {
+        return print_diagnostics(&parse_diags, path, &src);
+    }
+    let (bindings, diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+
+    let mut resolutions: Vec<_> = bindings.resolutions.iter().collect();
+    resolutions.sort_by_key(|(idx, _)| ast.span_of_expr(**idx).start);
+    for (idx, res) in resolutions {
+        let span = ast.span_of_expr(*idx);
+        let desc = match res {
+            ember_resolve::Resolution::Local { slot } => format!("local[{slot}]"),
+            ember_resolve::Resolution::Upvalue { index } => format!("upvalue[{index}]"),
+            ember_resolve::Resolution::Global { symbol } => {
+                format!("global({})", interner.resolve(*symbol))
+            }
+        };
+        println!("{}..{}\t{}", span.start, span.end, desc);
+    }
+
+    let mut upvalue_entries: Vec<_> = bindings
+        .upvalues
+        .iter()
+        .filter(|(_, ups)| !ups.is_empty())
+        .collect();
+    upvalue_entries.sort_by_key(|(id, _)| format!("{id:?}"));
+    for (id, ups) in upvalue_entries {
+        println!("{id:?}: {} upvalue(s) -> {ups:?}", ups.len());
+    }
+
     print_diagnostics(&diags, path, &src)
 }
 

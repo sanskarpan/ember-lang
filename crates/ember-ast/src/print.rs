@@ -125,7 +125,7 @@ pub fn print_expr(ast: &Ast, interner: &Interner, idx: Idx<Expr>) -> String {
         Expr::Lambda { params, body } => {
             let params_str: Vec<_> = params
                 .iter()
-                .map(|p| interner.resolve(*p).to_string())
+                .map(|p| interner.resolve(p.name).to_string())
                 .collect();
             format!(
                 "|{}| {}",
