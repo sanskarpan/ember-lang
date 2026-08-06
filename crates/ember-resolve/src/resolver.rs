@@ -226,11 +226,16 @@ impl<'a> Resolver<'a> {
     pub fn resolve_program(&mut self, stmts: &[Idx<Stmt>]) {
         for &s in stmts {
             match self.ast.stmt(s) {
-                Stmt::Fn { name, .. }
-                | Stmt::TypeDecl { name, .. }
-                | Stmt::StructDecl { name, .. } => {
+                Stmt::Fn { name, .. } | Stmt::StructDecl { name, .. } => {
                     let span = self.ast.span_of_stmt(s);
                     self.functions[0].declare(*name, false, true, span);
+                }
+                Stmt::TypeDecl { name, variants } => {
+                    let span = self.ast.span_of_stmt(s);
+                    self.functions[0].declare(*name, false, true, span);
+                    for variant in variants {
+                        self.functions[0].declare(variant.name, false, true, span);
+                    }
                 }
                 _ => {}
             }
@@ -1179,6 +1184,21 @@ mod tests {
             .collect();
         assert_eq!(warnings.len(), 1, "diags: {:?}", resolver.diagnostics());
         assert!(warnings[0].message.contains("unreachable"));
+    }
+
+    #[test]
+    fn adt_variant_constructor_names_resolve_as_globals() {
+        let src = "type Shape = | Circle(Float) | Rect(Float, Float) | Point;\nlet c = Circle(3.0);\nlet p = Point;\nprint(c);\nprint(p);";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "diags: {parse_diags:?}");
+        let mut resolver = Resolver::new(&ast, &mut interner);
+        resolver.resolve_program(&stmts);
+        let errors: Vec<_> = resolver
+            .diagnostics()
+            .iter()
+            .filter(|d| d.severity == ember_diag::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "diags: {:?}", resolver.diagnostics());
     }
 
     #[test]
