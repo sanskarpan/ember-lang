@@ -25,6 +25,10 @@ enum Command {
     /// Print each expression's inferred type, each top-level fn's generalized
     /// scheme, and any type diagnostics.
     Typecheck { file: String },
+    /// Parse, resolve, typecheck, check exhaustiveness, then actually run the
+    /// program, printing its final value or a rendered runtime-error
+    /// diagnostic.
+    Run { file: String },
 }
 
 fn main() -> ExitCode {
@@ -34,6 +38,7 @@ fn main() -> ExitCode {
         Command::Ast { file, json } => run_ast(&file, json),
         Command::Resolve { file } => run_resolve(&file),
         Command::Typecheck { file } => run_typecheck(&file),
+        Command::Run { file } => run_run(&file),
     }
 }
 
@@ -154,6 +159,56 @@ fn run_typecheck(path: &str) -> ExitCode {
     ));
 
     print_diagnostics(&diags, path, &src)
+}
+
+fn run_run(path: &str) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::from(3);
+    };
+    let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(&src);
+    if !parse_diags.is_empty() {
+        return print_diagnostics(&parse_diags, path, &src);
+    }
+
+    let mut resolver = ember_resolve::Resolver::new(&ast, &mut interner);
+    resolver.resolve_program(&stmts);
+    let resolve_diags = resolver.diagnostics();
+    if resolve_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(resolve_diags, path, &src);
+    }
+
+    let (info, infer_diags) = ember_types::infer(&ast, &mut interner, &stmts);
+    if infer_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(&infer_diags, path, &src);
+    }
+
+    let exhaustive_diags = ember_types::check_exhaustiveness(&ast, &interner, &info, &stmts);
+    if exhaustive_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(&exhaustive_diags, path, &src);
+    }
+
+    let (result, err) = ember_tree::interpret(&ast, &interner, &stmts);
+    if let Some(e) = err {
+        let use_color = std::env::var_os("NO_COLOR").is_none();
+        println!(
+            "{}",
+            ember_diag::render::render(&e.to_diagnostic(), path, &src, use_color)
+        );
+        return ExitCode::from(2);
+    }
+    if let Some(v) = result {
+        println!("{}", ember_tree::display_value(&v, &interner));
+    }
+    ExitCode::SUCCESS
 }
 
 fn print_diagnostics(diags: &[ember_diag::Diagnostic], path: &str, src: &str) -> ExitCode {
