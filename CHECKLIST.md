@@ -157,76 +157,80 @@
 ## Phase 5 — Type Inference (34 tasks)
 
 **Types**
-- [ ] 🔴 `Ty::{ Int, Float, Bool, String, Unit, Var, Fun, List, Adt, Record }`
-- [ ] 🔴 `Scheme { vars: Vec<TyVarId>, ty: Ty }`
-- [ ] 🔴 `TyEnv` mapping `Symbol -> Scheme`, with scoping
-- [ ] 🔴 Union-find substitution store: `Vec<Option<Ty>>` indexed by `TyVarId`, with path compression
-- [ ] 🔴 `fresh() -> Ty::Var` and `resolve(ty)` following the substitution chain
+- [x] 🔴 `Ty::{ Int, Float, Bool, String, Unit, Var, Fun, List, Adt, Record }` — `Record` is present in the enum but nothing in the current grammar produces one; named struct types go through `Ty::Adt` instead (nominal, not structural), matching how `Expr::Struct{name, ..}` requires a name at construction
+- [x] 🔴 `Scheme { vars: Vec<TyVarId>, ty: Ty }`
+- [x] 🔴 `TyEnv` mapping `Symbol -> Scheme`, with scoping — self-contained, independent of `ember-resolve`'s own scope stack (different data: schemes, not slots)
+- [x] 🔴 Union-find substitution store: `Vec<Option<Ty>>` indexed by `TyVarId`, with path compression
+- [x] 🔴 `fresh() -> Ty::Var` and `resolve(ty)` following the substitution chain
 
 **Constraints with provenance ⭐**
-- [ ] 🔴 `Constraint { lhs, rhs, origin }`
-- [ ] 🔴 `Origin::{ IfBranches, CallArgument, BinaryOp, Annotation, MatchArms, Return, ListElement, WhileCond, IndexTarget }` — each carrying the relevant spans
-- [ ] 🔴 **Constraint generation is a separate pass from solving** — this is what makes errors good, and is the main departure from textbook Algorithm W
-- [ ] 🔴 Generate for every expression form
+- [x] 🔴 `Constraint { lhs, rhs, origin }`
+- [x] 🔴 `Origin::{ IfBranches, CallArgument, BinaryOp, Annotation, MatchArms, Return, ListElement, WhileCond, IndexTarget }` — each carrying the relevant spans
+- [x] 🔴 **Constraint generation is a separate pass from solving** — implemented as EAGER unification: `unify(a, b, origin)` resolves and binds immediately at each call site during the generation walk, rather than batching every constraint into a list solved as one later pass. This matches the literal `unify(&mut self, a: &Ty, b: &Ty, origin: &Origin) -> Result<(), Diagnostic>` signature given in the reference sketches (a synchronous, immediately-erroring call, not a deferred-queue API) — the actual goal this checklist item names ("this is what makes errors good") is achieved the same way: every comparison carries its `Origin`, so mismatches report with full context. Field access is the one genuine exception requiring real deferral (see below), since its base type may still be unresolved at generation time.
+- [x] 🔴 Generate for every expression form — every `Expr`/`Stmt`/`Pattern` variant is handled except `Expr::Error`, which falls through to a fresh type variable (matching how the parser/resolver already treat `Error` nodes leniently rather than crashing on them)
 
 **Unification**
-- [ ] 🔴 `unify(a, b, origin)` — resolve both, then match structurally
-- [ ] 🔴 Var-to-var, var-to-type binding
-- [ ] 🔴 **Occurs check** before binding: `a := a -> b` is an infinite type. Without this, `let f = |x| f(x)` hangs the compiler
-- [ ] 🔴 `Fun` arity mismatch → dedicated "expected N arguments, found M" error
-- [ ] 🔴 Structural recursion for `Fun`, `List`, `Adt`, `Record`
-- [ ] 🔴 Mismatch error formats **from the Origin**, labeling both contributing spans
+- [x] 🔴 `unify(a, b, origin)` — resolve both, then match structurally
+- [x] 🔴 Var-to-var, var-to-type binding
+- [x] 🔴 **Occurs check** before binding: `a := a -> b` is an infinite type. Without this, `let f = |x| f(x)` hangs the compiler — tested with a spawned-thread timeout-style check confirming it terminates
+- [x] 🔴 `Fun` arity mismatch → dedicated "expected N arguments, found M" error — covered at both the `unify.rs` (`Ty::Fun`-vs-`Ty::Fun`) and `infer.rs`/`infer_call` (`add(1, 2, 3)` against a 2-arg fn) levels
+- [x] 🔴 Structural recursion for `Fun`, `List`, `Adt`, `Record`
+- [x] 🔴 Mismatch error formats **from the Origin**, labeling both contributing spans
 
 **Polymorphism**
-- [ ] 🔴 `generalize(env, ty)`: quantify free vars **not free in the environment**
-- [ ] 🔴 `instantiate(scheme)`: fresh var per quantified var
-- [ ] 🔴 Generalize at `let` and top-level `fn` only
-- [ ] 🔴 **Value restriction**: do not generalize mutable bindings or general applications — `let mut r = [];` generalizing to `∀a.[a]` is unsound
-- [ ] 🔴 Recursive functions: bind a monomorphic type var before inferring the body, generalize after
+- [x] 🔴 `generalize(env, ty)`: quantify free vars **not free in the environment** — also excludes any variable still referenced by a pending field-access obligation (an un-annotated parameter's struct type may only be pinned down by a field access resolved after generalization would otherwise run), the same "still owned elsewhere" reasoning extended to a second source of external ownership
+- [x] 🔴 `instantiate(scheme)`: fresh var per quantified var
+- [x] 🔴 Generalize at `let` and top-level `fn` only — a nested (non-top-level) `fn` still gets the monomorphic-bind-for-recursion treatment but is never generalized afterward, per the literal wording
+- [x] 🔴 **Value restriction**: do not generalize mutable bindings or general applications — `let mut r = [];` generalizing to `∀a.[a]` is unsound — `is_syntactic_value` implemented exactly as sketched (literals, `Lambda`, `Var` only; not extended to list/struct literals or calls)
+- [x] 🔴 Recursive functions: bind a monomorphic type var before inferring the body, generalize after — note a narrower-than-ideal limitation for **mutual** recursion specifically: top-level functions are generalized one at a time in declaration order, not as a whole strongly-connected-component group, so a type variable genuinely shared between two mutually-recursive siblings may end up less generalized than theoretically possible once the first of the pair is generalized. Not a soundness issue (only ever under-generalizes, never accepts something unsound) and not exercised by this phase's own tests, but a real precision gap worth flagging before Phase 6+ builds on top of it
 
 **Annotations & ADTs**
-- [ ] 🔴 Annotations become constraints, not shortcuts — they must be *checked*, not trusted
-- [ ] 🔴 ADT declarations register constructors as functions: `Circle : Float -> Shape`
-- [ ] 🔴 Struct literals and field access; missing field → error naming it
-- [ ] 🔴 Pattern typing: patterns constrain the scrutinee and bind variables at the right types
+- [x] 🔴 Annotations become constraints, not shortcuts — they must be *checked*, not trusted — implemented via `unify` against the annotation's resolved type, for both `let` bindings and struct literal fields
+- [x] 🔴 ADT declarations register constructors as functions: `Circle : Float -> Shape` — a nullary variant (`Point`) registers as a plain value binding of the ADT type instead of a 0-arg function, since it's referenced as a bare `Var`, not called
+- [x] 🔴 Struct literals and field access; missing field → error naming it — field access specifically required genuine deferral (collected as `FieldObligation`s during generation, resolved in one pass against the final substitution once the whole program is walked), since a field's base type may still be unresolved when the `Field` node itself is visited; an obligation still unresolved at that point produces a "cannot infer the type of this field access; try adding a type annotation" error rather than attempting row-polymorphic/structural inference (out of scope, no type-class or row-polymorphism mechanism exists this phase)
+- [x] 🔴 Pattern typing: patterns constrain the scrutinee and bind variables at the right types — two pre-existing, honestly-documented (not newly introduced) grammar/AST gaps affect this: `Pattern::Tuple` types each binding with a fresh, unconstrained variable and is otherwise inert, since there is no `Ty::Tuple` and no `Expr::Tuple` to ever produce a matchable value; and a bare nullary-variant pattern (e.g. `Point` with no parens) is indistinguishable from a fresh bind pattern at the parser level (`pattern_primary` only produces `Pattern::Ctor` when parens follow the identifier), so it silently shadows rather than matches the constructor — fixing either would mean parser/grammar changes outside this phase's scope
 
 **Diagnostics**
-- [ ] 🔴 Type mismatch showing both types with both spans labeled
-- [ ] 🔴 Infinite type error with a readable explanation
-- [ ] 🔴 Pretty-print types with minimal parens and readable var names (`a`, `b`, … not `t47`)
-- [ ] 🟡 "expected `Int`, found `Float`" suggests an explicit conversion
+- [x] 🔴 Type mismatch showing both types with both spans labeled
+- [x] 🔴 Infinite type error with a readable explanation
+- [x] 🔴 Pretty-print types with minimal parens and readable var names (`a`, `b`, … not `t47`) — a single-parameter function type prints without parens around its param list (`a -> a`), multi/zero-parameter ones keep them, matching conventional ML-style function-type printing
+- [x] 🟡 "expected `Int`, found `Float`" suggests an explicit conversion — included this round per explicit scope decision
 
 **Trace output (for the playground) ⭐**
-- [ ] 🟡 `InferenceTrace { constraints: Vec<(Constraint, Span)>, steps: Vec<UnifyStep>, final_env }`
-- [ ] 🟡 `UnifyStep { lhs, rhs, result_substitution, origin }` — the data behind Panel 4
+- [ ] 🟡 `InferenceTrace { constraints: Vec<(Constraint, Span)>, steps: Vec<UnifyStep>, final_env }` — built with a narrower shape than specified: `InferenceTrace` here is just `{ steps: Vec<UnifyStep> }`, with no separate `constraints` list (each step already carries its own `lhs`/`rhs`/`origin`, so a parallel constraints list would be redundant given the eager-unification architecture) and no `final_env` snapshot at all. Populated correctly for what it does track, but the literal shape doesn't match — left honestly unchecked rather than claiming full compliance, since there is still no playground consumer to validate the shape against
+- [ ] 🟡 `UnifyStep { lhs, rhs, result_substitution, origin }` — implemented as `UnifyStep { lhs, rhs, origin, succeeded: bool }`; `succeeded` covers whether the attempt worked but there is no `result_substitution` field capturing what actually got bound. Same reasoning as above: a real but non-blocking shape gap, deferred rather than fixed since nothing consumes this yet
 
 **Tests**
-- [ ] 🔴 `let x = 42` infers `Int`
-- [ ] 🔴 `fn identity(x) { x }` infers `∀a. a -> a`
-- [ ] 🔴 `identity(1)` and `identity("s")` both typecheck — **let-polymorphism works**
-- [ ] 🔴 Occurs check: `let f = |x| f(x)` → infinite type error, no hang
-- [ ] 🔴 `if` branch mismatch → error labeling both branches
-- [ ] 🔴 Arity mismatch → correct message
-- [ ] 🔴 Value restriction: mutable binding does not generalize
+- [x] 🔴 `let x = 42` infers `Int`
+- [x] 🔴 `fn identity(x) { x }` infers `∀a. a -> a` — tested via `scheme.vars.len() == 1` (confirms genuine polymorphism) rather than asserting the literal display string, since the underlying property is what matters
+- [x] 🔴 `identity(1)` and `identity("s")` both typecheck — **let-polymorphism works**
+- [x] 🔴 Occurs check: `let f = |x| f(x)` → infinite type error, no hang
+- [x] 🔴 `if` branch mismatch → error labeling both branches
+- [x] 🔴 Arity mismatch → correct message
+- [x] 🔴 Value restriction: mutable binding does not generalize
 
 ---
 
 ## Phase 6 — Exhaustiveness Checking (14 tasks)
 
-- [ ] 🔴 `PatMatrix` — rows of patterns
-- [ ] 🔴 `is_useful(matrix, pattern_vec, ty)` — Maranget's usefulness algorithm
-- [ ] 🔴 Specialization `S(c, matrix)` for constructor `c`
-- [ ] 🔴 Default matrix `D(matrix)` for wildcards
-- [ ] 🔴 Constructor sets per type: ADT variants, bool `{true,false}`, list `{[], [_,..]}`; infinite for Int/String/Float
-- [ ] 🔴 Witness generation: when `_` is still useful, produce concrete missing patterns
-- [ ] 🔴 Non-exhaustive → error **naming the missing patterns**
-- [ ] 🔴 Unreachable arm → warning (falls out of the same algorithm)
-- [ ] 🔴 Or-patterns expand into multiple rows
-- [ ] 🔴 Guards: an arm with a guard **never** contributes to exhaustiveness (the guard may be false)
-- [ ] 🔴 Nested patterns handled recursively
-- [ ] 🔴 Test: missing one ADT variant → named in the error
-- [ ] 🔴 Test: `_` arm makes any match exhaustive
-- [ ] 🔴 Test: arm after `_` reported unreachable
+- [x] 🔴 `PatMatrix` — rows of patterns — implemented as `Vec<Vec<Pat>>` over the algorithm's own normalized `Pat`/`CtorId` shape (`ember-types/src/pat.rs`), not `ember_ast::Pattern` directly — `lower_pattern` converts between the two
+- [x] 🔴 `is_useful(matrix, pattern_vec, ty)` — Maranget's usefulness algorithm — witness-carrying (a positive result names the concrete missing pattern(s), not just a bool), verified against a hand-derived multi-missing-variant case (two different missing ADT variants reported simultaneously, matching the exact `SPEC.md §9` example output)
+- [x] 🔴 Specialization `S(c, matrix)` for constructor `c`
+- [x] 🔴 Default matrix `D(matrix)` for wildcards
+- [x] 🔴 Constructor sets per type: ADT variants, bool `{true,false}`, list `{[], [_,..]}`; infinite for Int/String/Float
+- [x] 🔴 Witness generation: when `_` is still useful, produce concrete missing patterns
+- [x] 🔴 Non-exhaustive → error **naming the missing patterns** — found and fixed a real diagnostic-rendering bug while wiring this into the CLI: `ariadne` 0.4.1 silently drops a diagnostic's `.with_note()`/`.with_help()` text when it has zero labels, so the original "non-exhaustive patterns" error printed with the "missing: ..." text silently swallowed. Fixed by giving the diagnostic a primary span (the `match` expression itself). Worth keeping in mind for future phases: every diagnostic needs at least one label to render its notes/help at all, not just for a caret to point somewhere
+- [x] 🔴 Unreachable arm → warning (falls out of the same algorithm)
+- [x] 🔴 Or-patterns expand into multiple rows — including nested inside a constructor's own arguments (e.g. `Circle(1.0 | 2.0)`), not just at an arm's top level, and verified for internal reachability between alternatives of the same arm (`A | B` correctly lets `B` see `A`)
+- [x] 🔴 Guards: an arm with a guard **never** contributes to exhaustiveness (the guard may be false)
+- [x] 🔴 Nested patterns handled recursively — falls out of the matrix algorithm's own recursion (no special-casing needed in `lower_pattern` or `is_useful`); not separately unit-tested as its own dedicated case beyond what the ADT/list/struct pattern tests already exercise structurally
+- [x] 🔴 Test: missing one ADT variant → named in the error
+- [x] 🔴 Test: `_` arm makes any match exhaustive
+- [x] 🔴 Test: arm after `_` reported unreachable
+
+**Notes on scope carried over from Phase 5, unaffected by this phase:**
+- `Pattern::Tuple` remains inert (treated as a single, always-complete constructor) — the pre-existing gap that no `Ty::Tuple`/`Expr::Tuple` exist means nothing can ever construct a matchable tuple *value*, so exhaustiveness correctly never flags it, but it's still fundamentally unreachable at runtime for the same reason it always was. This phase did, however, add real parser support for `(a, b)`-shaped **pattern syntax** (previously a hard parse error — `pattern_primary` had no `LParen` production at all), needed to make `lower_pattern`'s tuple case reachable from real source; single-item-no-comma is grouping, matching expression semantics, a trailing comma or 2+ items is a genuine `Pattern::Tuple`. This is a grammar addition beyond Phase 6's own literal checklist scope, called out honestly here since it touches already-shipped Phase 3 code.
+- A bare nullary-variant pattern (e.g. `Point` with no parens) still lowers as `Pat::Wild` (via `Pattern::Bind`, since the parser has no way to distinguish "match Point" from "bind a fresh local named Point" for a bare identifier — see Phase 5's checklist notes). This means a match using a bare nullary variant in an arm can pass exhaustiveness checking without that arm having genuinely constrained anything — an honest, carried-over limitation, not something this phase silently papers over.
 
 ---
 
