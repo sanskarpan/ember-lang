@@ -236,26 +236,28 @@
 
 ## Phase 7 — Tree-Walking Interpreter (20 tasks)
 
-- [ ] 🔴 `Value::{ Int, Float, Bool, Nil, Str(Rc<String>), List(Rc<RefCell<Vec>>), Closure(Rc<Closure>), Native, Adt, Record }`
-- [ ] 🔴 `Env { values: FxHashMap<Symbol, Value>, parent: Option<Rc<RefCell<Env>>> }`
-- [ ] 🔴 **`Flow::{ Normal, Return, Break, Continue }` threaded through return types** — never `panic!`/`catch_unwind` for control flow (breaks WASM and stepping)
-- [ ] 🔴 `eval_expr` for every `Expr` variant
-- [ ] 🔴 `exec_stmt` for every `Stmt` variant
-- [ ] 🔴 Closures capture `Rc<RefCell<Env>>`; mutation through a closure is visible to its siblings
-- [ ] 🔴 Pattern matching at runtime with binding extraction
-- [ ] 🔴 Native functions: `print`, `len`, `push`, `clock`, `str`, `int`, `float`, `type_of`
-- [ ] 🔴 Runtime errors carry spans and render as full diagnostics
-- [ ] 🔴 Call-stack depth limit → "stack overflow" diagnostic with the call chain, not a process crash
-- [ ] 🔴 Integer overflow → checked, reported with the operand values
-- [ ] 🔴 Division by zero → diagnostic
-- [ ] 🟡 Step mode: `eval_step()` yielding after each node, with a snapshot of env + current node (drives Panel 6)
-- [ ] 🔴 Test: arithmetic, comparison, logical short-circuit
-- [ ] 🔴 Test: closures capture and mutate correctly
-- [ ] 🔴 Test: recursion (`fib`, `fact`)
-- [ ] 🔴 Test: all loop forms with `break`/`continue`
-- [ ] 🔴 Test: pattern matching with destructuring
-- [ ] 🔴 Test: shared mutable capture between two closures
-- [ ] 🔴 Test: runtime error spans point at the right expression
+- [x] 🔴 `Value::{ Int, Float, Bool, Nil, Str(Rc<String>), List(Rc<RefCell<Vec>>), Closure(Rc<Closure>), Native, Adt, Record }` — two additions beyond the literal sketch, both justified in the design doc: `Record` gained a `name: Symbol` field (needed for a meaningful `type_of()` on a struct instance — the bare fields map can't say "Point"), and `AdtCtor{type_name,variant,arity}` is new (the spec's sketch only shows an already-*constructed* `AdtValue`, not how a payload-ful variant constructor is represented as a callable value before it's invoked)
+- [x] 🔴 `Env { values: FxHashMap<Symbol, Value>, parent: Option<Rc<RefCell<Env>>> }`
+- [x] 🔴 **`Flow::{ Normal, Return, Break, Continue }` threaded through return types** — never `panic!`/`catch_unwind` for control flow (breaks WASM and stepping)
+- [x] 🔴 `eval_expr` for every `Expr` variant — the match compiles exhaustively with no catch-all (confirmed against `ember-ast`'s real `Expr` enum, including `Expr::Error` getting its own explicit no-op arm rather than relying on a wildcard)
+- [x] 🔴 `exec_stmt` for every `Stmt` variant — 10 of 12 variants have real handling; `StructDecl` and `Error` are legitimate no-ops (a struct *declaration* needs no runtime registration — struct *values* are built directly by `Expr::Struct`, not via a stored constructor) rather than genuinely-missing cases
+- [x] 🔴 Closures capture `Rc<RefCell<Env>>`; mutation through a closure is visible to its siblings — tested directly with two closures sharing one mutable capture
+- [x] 🔴 Pattern matching at runtime with binding extraction — a straightforward recursive walk (no matrix algorithm needed, unlike Phase 6's exhaustiveness checker, since matching one concrete value against one pattern has no "is this useful against everything above it" question); `Pattern::Tuple` still can never match (no `Value::Tuple` exists, mirroring the still-inert `Ty::Tuple`/`Expr::Tuple` gap carried since Phase 5/6) — re-confirmed unaffected here, not newly introduced or newly fixed
+- [x] 🔴 Native functions: `print`, `len`, `push`, `clock`, `str`, `int`, `float`, `type_of` — dispatched via a fallback lookup inside `eval_var` (checking the resolved name text against a static table when the environment has nothing) rather than pre-seeded `Value::Native` bindings, a deliberate choice to avoid needing `&mut Interner` throughout the crate; functionally equivalent from a running program's perspective
+- [x] 🔴 Runtime errors carry spans and render as full diagnostics — verified the span is span-*precise* (points at the exact failing subexpression, e.g. `2 / 0` inside `1 + (2 / 0)`, not the outer expression), which falls out naturally from each recursive `eval_expr` call computing its own node's span fresh rather than threading one down from an outer caller
+- [x] 🔴 Call-stack depth limit → "stack overflow" diagnostic with the call chain, not a process crash — `MAX_CALL_DEPTH` was tuned down twice during implementation (512 → 128 → 64) after real native-stack SIGABRTs were caught in testing (debug-build stack frames per `eval_expr`/`exec_stmt`/`eval_call`/`call_closure` call are larger than the guard's original assumption, and step-mode's wrapper indirection added one more frame per node) — the guard now reliably trips before the OS stack does, verified over repeated runs
+- [x] 🔴 Integer overflow → checked, reported with the operand values
+- [x] 🔴 Division by zero → diagnostic
+- [x] 🟡 Step mode: `eval_step()` yielding after each node, with a snapshot of env + current node (drives Panel 6) — included this round per explicit scope decision, implemented as a synchronous `StepEvent` callback hook on `Interp` (not true async pause/resume — a real interactive debugger would run interpretation on a background thread and have the callback block on a channel; that's later-phase LSP/playground work, not this crate's), wired non-invasively by renaming the existing full-match `eval_expr`/`exec_stmt` to private `_uninstrumented` methods behind new instrumented public wrappers
+- [x] 🔴 Test: arithmetic, comparison, logical short-circuit
+- [x] 🔴 Test: closures capture and mutate correctly
+- [x] 🔴 Test: recursion (`fib`, `fact`) — `fact` tested directly; mutual recursion (`is_even`/`is_odd`) tested too, beyond the checklist's literal `fib`/`fact` wording
+- [x] 🔴 Test: all loop forms with `break`/`continue`
+- [x] 🔴 Test: pattern matching with destructuring
+- [x] 🔴 Test: shared mutable capture between two closures
+- [x] 🔴 Test: runtime error spans point at the right expression
+
+**Also added beyond the checklist's explicit scope:** index-out-of-bounds as its own runtime error category (necessary once list indexing exists with dynamic, not statically-known, indices — the same class of genuinely-runtime-only failure as the other three), and an `ember-cli run` subcommand chaining parse → resolve → infer → exhaustiveness-check → interpret, the natural culmination of every prior phase's CLI subcommand.
 
 ---
 
