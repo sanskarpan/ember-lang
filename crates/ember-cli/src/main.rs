@@ -22,6 +22,9 @@ enum Command {
     /// Print each Var's resolution (local/upvalue/global), per-function
     /// upvalue counts, and any resolver diagnostics.
     Resolve { file: String },
+    /// Print each expression's inferred type, each top-level fn's generalized
+    /// scheme, and any type diagnostics.
+    Typecheck { file: String },
 }
 
 fn main() -> ExitCode {
@@ -30,6 +33,7 @@ fn main() -> ExitCode {
         Command::Tokens { file } => run_tokens(&file),
         Command::Ast { file, json } => run_ast(&file, json),
         Command::Resolve { file } => run_resolve(&file),
+        Command::Typecheck { file } => run_typecheck(&file),
     }
 }
 
@@ -105,6 +109,49 @@ fn run_resolve(path: &str) -> ExitCode {
     for (id, ups) in upvalue_entries {
         println!("{id:?}: {} upvalue(s) -> {ups:?}", ups.len());
     }
+
+    print_diagnostics(&diags, path, &src)
+}
+
+fn run_typecheck(path: &str) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::from(3);
+    };
+    let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(&src);
+    if !parse_diags.is_empty() {
+        return print_diagnostics(&parse_diags, path, &src);
+    }
+    let mut resolver = ember_resolve::Resolver::new(&ast, &mut interner);
+    resolver.resolve_program(&stmts);
+    let resolve_diags = resolver.diagnostics();
+    if resolve_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(resolve_diags, path, &src);
+    }
+
+    let (mut info, mut diags) = ember_types::infer(&ast, &mut interner, &stmts);
+
+    let mut typed: Vec<_> = info.expr_types.iter().collect();
+    typed.sort_by_key(|(idx, _)| ast.span_of_expr(**idx).start);
+    for (idx, ty) in typed {
+        let span = ast.span_of_expr(*idx);
+        let ty_str = ember_types::display_ty(ty, &mut info.subst, &info.adts, &interner);
+        println!("{}..{}\t{}", span.start, span.end, ty_str);
+    }
+
+    let mut schemes: Vec<_> = info.fn_schemes.iter().collect();
+    schemes.sort_by_key(|(name, _)| interner.resolve(**name).to_string());
+    for (name, scheme) in schemes {
+        let scheme_str =
+            ember_types::display_scheme(scheme, &mut info.subst, &info.adts, &interner);
+        println!("{}: {}", interner.resolve(*name), scheme_str);
+    }
+
+    diags.extend(ember_types::check_exhaustiveness(
+        &ast, &interner, &info, &stmts,
+    ));
 
     print_diagnostics(&diags, path, &src)
 }
