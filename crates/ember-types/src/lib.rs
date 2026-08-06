@@ -1,1 +1,26 @@
-//! Type inference and checking. Implemented in Phase 5.
+pub mod adt;
+pub mod constraint;
+pub mod ctor_set;
+pub mod display;
+pub mod env;
+pub mod exhaustive;
+pub mod infer;
+pub mod matrix;
+pub mod pat;
+pub mod subst;
+pub mod trace;
+pub mod ty;
+pub mod unify;
+
+pub use adt::{AdtDecl, AdtRegistry};
+pub use constraint::{Constraint, Origin};
+pub use ctor_set::{ctor_arg_types, ctor_set, CtorSet};
+pub use display::{display_scheme, display_ty};
+pub use env::TyEnv;
+pub use exhaustive::{check_exhaustive, check_exhaustiveness, fmt_pat, is_useful, Usefulness};
+pub use infer::{infer, Infer, TypeInfo};
+pub use matrix::{default_matrix, specialize, PatMatrix};
+pub use pat::{lower_pattern, CtorId, Pat};
+pub use subst::Subst;
+pub use trace::{InferenceTrace, UnifyStep};
+pub use ty::{AdtId, Scheme, Ty, TyVarId};
