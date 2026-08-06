@@ -15,4 +15,5 @@ ember-ast = { path = "../ember-ast" }
 ember-parser = { path = "../ember-parser" }
 ember-resolve = { path = "../ember-resolve" }
 ember-types = { path = "../ember-types" }
+ember-tree = { path = "../ember-tree" }
 clap = { version = "4", features = ["derive"] }
