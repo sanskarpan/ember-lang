@@ -926,6 +926,35 @@ impl<'src> Parser<'src> {
             TokenKind::True => self.ast.alloc_pat(Pattern::Bool(true), tok.span),
             TokenKind::False => self.ast.alloc_pat(Pattern::Bool(false), tok.span),
             TokenKind::LBracket => self.list_pattern(tok),
+            TokenKind::LParen => {
+                // `(pat)` with no comma is just grouping, same as an
+                // expression in parens — it returns the inner pattern
+                // unwrapped, not a one-element tuple. A trailing comma
+                // (`(a,)`) or two-or-more items makes it a real tuple.
+                let mut items = Vec::new();
+                let mut saw_comma = false;
+                if self.peek().kind != TokenKind::RParen {
+                    loop {
+                        items.push(self.pattern());
+                        if self.peek().kind == TokenKind::Comma {
+                            self.advance();
+                            saw_comma = true;
+                            if self.peek().kind == TokenKind::RParen {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                let close = self.expect_close(tok, TokenKind::RParen);
+                if items.len() == 1 && !saw_comma {
+                    items.into_iter().next().unwrap()
+                } else {
+                    self.ast
+                        .alloc_pat(Pattern::Tuple(items), tok.span.to(close.span))
+                }
+            }
             _ => {
                 self.emit(
                     Diagnostic::error(format!("expected a pattern, found `{:?}`", tok.kind))
