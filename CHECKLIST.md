@@ -308,32 +308,39 @@
 
 ## Phase 9 — Virtual Machine (26 tasks)
 
-- [ ] 🔴 `Vm { stack, frames, globals, open_upvalues, gc }`
-- [ ] 🔴 `CallFrame { closure, ip, slot_base }`
-- [ ] 🔴 Dispatch loop: `match self.read_op()`
-- [ ] 🔴 `read_u8` / `read_u16` / `read_constant` with `ip` advance
-- [ ] 🔴 Stack push/pop/peek with a depth limit
-- [ ] 🔴 Arithmetic with type checks; runtime type error → diagnostic with the operand types
-- [ ] 🔴 `OP_GET_LOCAL` = `stack[frame.slot_base + slot]` — an **indexed array access**, which is the whole speed story vs the tree-walker
-- [ ] 🔴 Comparison and equality across all value types
-- [ ] 🔴 Jump instructions
-- [ ] 🔴 `OP_CALL`: arity check, push a `CallFrame`
-- [ ] 🔴 `OP_RETURN`: **close upvalues at `slot_base` BEFORE truncating the stack** — otherwise closures hold dangling slots
-- [ ] 🔴 `OP_CLOSURE`: read upvalue descriptors, capture from frame locals or enclosing upvalues
-- [ ] 🔴 `capture_upvalue(slot)`: search `open_upvalues` (sorted by slot descending) and reuse if present — **two closures over the same variable must share one cell**
-- [ ] 🔴 `close_upvalues(from)`: move Open→Closed, hoisting values from stack to heap
-- [ ] 🔴 Native function calls
-- [ ] 🔴 Runtime errors with a **full stack trace**: function names and line numbers from each frame's `ip`
-- [ ] 🟡 Step mode: `step()` executing one instruction and returning the full VM state
-- [ ] 🔵 NaN boxing behind a feature flag: `#[repr(transparent)] NanValue(u64)`, QNAN tagging, pointer packing
-- [ ] 🔵 Computed-goto-style dispatch via a jump table
-- [ ] 🔴 Test: arithmetic, comparison, logic
-- [ ] 🔴 Test: function calls, recursion, correct return values
-- [ ] 🔴 Test: closure counter increments across calls
-- [ ] 🔴 Test: upvalue closed at scope exit, value survives
-- [ ] 🔴 Test: shared capture — two closures see each other's mutations
-- [ ] 🔴 Test: stack overflow produces a diagnostic with a stack trace, not a crash
-- [ ] 🔴 **Test: every conformance program produces identical output to the tree-walker**
+- [x] 🔴 `Vm { stack, frames, globals, open_upvalues, gc }` — **no `gc` field**: there's no `GcHeap` until Phase 10, so nothing to hold a handle to yet; this is the "no GC" premise made concrete in the one place the checklist's own sketch mentions it directly, not an oversight.
+- [x] 🔴 `CallFrame { closure, ip, slot_base }`
+- [x] 🔴 Dispatch loop: `match self.read_op()`
+- [x] 🔴 `read_u8` / `read_u16` / `read_constant` with `ip` advance
+- [x] 🔴 Stack push/pop/peek with a depth limit — the depth limit is `MAX_FRAMES` (a call-depth cap), not a separate raw value-stack size cap: the dispatch loop is iterative, so unlike a recursive tree-walker there's no risk of unbounded plain-value-stack growth independent of call depth, and `ember-compile`'s own debug-build stack-balance assertions (an earlier phase) already guarantee every loop body is stack-neutral per iteration.
+- [x] 🔴 Arithmetic with type checks; runtime type error → diagnostic with the operand types
+- [x] 🔴 `OP_GET_LOCAL` = `stack[frame.slot_base + slot]` — an **indexed array access**, which is the whole speed story vs the tree-walker
+- [x] 🔴 Comparison and equality across all value types — `Equal` delegates to a dedicated `values_equal` (structural, cross-type-safe, never errors); `Greater`/`Less` are numeric-only (matching `ember-compile`'s desugaring: there's no `OP_NOT_EQUAL`/`OP_LESS_EQ`/`OP_GREATER_EQ` at all — `!=`/`<=`/`>=` compile to `Equal`+`Not`/`Greater`+`Not`/`Less`+`Not`, so the VM only ever implements the three primitives directly).
+- [x] 🔴 Jump instructions
+- [x] 🔴 `OP_CALL`: arity check, push a `CallFrame` — for both `Closure` and `Native` callees; the callee-cleanup arithmetic (`frame.slot_base - 1` when a call returns, not `frame.slot_base`) needed careful, explicit reasoning to get right — the callee itself sits one slot *below* where the new frame's own locals start, so it has to be removed alongside them, not left behind.
+- [x] 🔴 `OP_RETURN`: **close upvalues at `slot_base` BEFORE truncating the stack** — otherwise closures hold dangling slots
+- [x] 🔴 `OP_CLOSURE`: read upvalue descriptors, capture from frame locals or enclosing upvalues
+- [x] 🔴 `capture_upvalue(slot)`: search `open_upvalues` and reuse if present — **two closures over the same variable must share one cell**. **Not** kept sorted by slot descending, unlike the checklist's own intrusive-linked-list-flavored wording: `close_upvalues` does a full drain-and-filter of `open_upvalues` on every close regardless of order (see below), so the sort's only purpose elsewhere — an early-exit scan — never applies here; a deliberate, explained deviation.
+- [x] 🔴 `close_upvalues(from)`: move Open→Closed, hoisting values from stack to heap
+- [x] 🔴 Native function calls — 8 functions (`print`/`len`/`push`/`clock`/`str`/`int`/`float`/`type_of`), matching the tree-walker's own set exactly, reimplemented against the VM's own `Value` type (no `&Interner` needed anywhere in them — see the cross-cutting note below).
+- [x] 🔴 Runtime errors with a **full stack trace**: function names and line numbers from each frame's `ip`
+- [x] 🟡 Step mode: `step()` executing one instruction — returns `Result<StepOutcome, RuntimeError>` (`StepOutcome::Running` / `Done(Value)`) rather than literally "the full VM state" as the checklist's wording suggests; the VM itself (`stack`/`frames`/`globals`/`open_upvalues`) is always inspectable directly between `step()` calls on the same `Vm`, so nothing about program state is actually hidden, just not repackaged into a separate snapshot type on every call.
+- [ ] 🔵 NaN boxing behind a feature flag — deferred, no measured performance need yet.
+- [ ] 🔵 Computed-goto-style dispatch via a jump table — deferred, same reason.
+- [x] 🔴 Test: arithmetic, comparison, logic
+- [x] 🔴 Test: function calls, recursion, correct return values — recursion specifically via a real compiled+run `fact(5)`, and a separate runaway-recursion test confirming `MAX_FRAMES` is actually reachable and produces a clean error, not a hang or native crash.
+- [x] 🔴 Test: closure counter increments across calls
+- [x] 🔴 Test: upvalue closed at scope exit, value survives
+- [x] 🔴 Test: shared capture — two closures see each other's mutations — plus a companion test confirming two *independently constructed* closures over separate calls do **not** share state, the negative case the positive test alone wouldn't catch.
+- [x] 🔴 Test: stack overflow produces a diagnostic with a stack trace, not a crash
+- [x] 🔴 **Test: every conformance program produces identical output to the tree-walker** — `ember-cli`'s conformance harness now runs every fixture through both backends in one pass, asserting each against `.expected` independently and the two against each other directly. Both backends agreed on every fixture the first time this ran, after Tasks 1-14 (below) had already found and fixed the bugs that would otherwise have surfaced here.
+
+**Retroactive fixes to already-merged code, found only because this phase is the first to actually *execute* compiled bytecode end to end — none of these were catchable by disassembly-only testing (Phase 8) or resolution/type-checking-only testing (Phases 4-6):**
+- **`ember-bytecode`**: `Chunk.functions` changed from `Vec<FunctionProto>` to `Vec<Rc<FunctionProto>>`, so a `Value::Closure` can hold an independently-owned, cheaply-clonable handle to its `FunctionProto` that outlives the function that created it.
+- **`ember-compile`**: the top-level `compile()` driver unconditionally discarded its last statement's value (always returning `Nil`) instead of returning it, unlike the tree-walker's `interpret`. Fixed to special-case the last non-hoisted top-level statement: an `ExprStmt`'s value flows through instead of being popped; anything else still evaluates to `Nil`, matching the tree-walker's own per-statement-kind semantics exactly.
+- **`ember-compile`**: `emit_tail_scope_exit`'s pre-close for a block's *first*-declared captured local never actually worked — `OP_CLOSE_UPVALUE` is zero-operand and always targets whatever's physically on top of the stack, which a duplicated copy of that local never was once other locals/the tail value sat above it. Silently never closed the upvalue with its real value. Fixed by adding a new opcode, `OP_CLOSE_UPVALUES_FROM(slot)`, that closes every open upvalue at or above a given slot *in place*, without touching the stack — sidestepping the top-of-stack constraint entirely.
+- **`ember-resolve`**: `Expr::Match`'s resolution never reserved a local slot for the scrutinee, even though `ember-compile`'s `compile_match` keeps it pinned in its own slot for the whole match — every pattern-bound name inside every arm resolved to a slot one lower than where the compiler actually placed it, so (for a single-binding pattern) a bound name's own reads silently returned the *scrutinee* instead of the destructured value. Fixed by reserving a hidden slot around arm resolution, mirroring the compiler's own scrutinee-slot lifetime exactly.
+- **`ember-vm`** (this phase, not a fix to an earlier one, but worth naming for anyone reading this section as "why does `Vm::new` look like that"): `ember-resolve`'s `seed_native_globals` reserves resolver slots 0-7 for the 8 native names in the top-level function's own scope — meaning direct top-level references to a native (not from inside a nested function) resolve as `Resolution::Local`, not `Global`, and read straight off the physical stack. `Vm::new` therefore pushes the real 8 native values onto the stack in `ember-resolve::NATIVE_GLOBALS`' exact order *and* inserts them into `globals` (for nested-function references, which the resolver's own `resolve_upvalue` correctly routes as `Global` instead of capturing as an upvalue) — both paths needed, not just one.
 
 ---
 
