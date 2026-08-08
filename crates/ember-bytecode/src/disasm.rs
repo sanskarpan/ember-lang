@@ -71,7 +71,7 @@ pub fn disassemble_instruction(
             let count = read_u16(offset + 1);
             (format!("OP_MAKE_LIST count={count}"), 3)
         }
-        Op::GetLocal | Op::SetLocal | Op::GetUpvalue | Op::SetUpvalue => {
+        Op::GetLocal | Op::SetLocal | Op::GetUpvalue | Op::SetUpvalue | Op::CloseUpvaluesFrom => {
             let slot = chunk.code[offset + 1];
             (format!("{} slot={slot}", op_name(op)), 2)
         }
@@ -129,6 +129,7 @@ fn op_name(op: Op) -> &'static str {
         Op::GetUpvalue => "OP_GET_UPVALUE",
         Op::SetUpvalue => "OP_SET_UPVALUE",
         Op::CloseUpvalue => "OP_CLOSE_UPVALUE",
+        Op::CloseUpvaluesFrom => "OP_CLOSE_UPVALUES_FROM",
         Op::GetField => "OP_GET_FIELD",
         Op::SetField => "OP_SET_FIELD",
         Op::GetIndex => "OP_GET_INDEX",
