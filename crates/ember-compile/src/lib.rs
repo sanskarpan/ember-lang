@@ -1,1 +1,5 @@
-//! AST-to-bytecode compiler. Implemented in Phase 8.
+//! AST-to-bytecode compiler.
+
+pub mod compiler;
+
+pub use compiler::{compile, Compiler};
