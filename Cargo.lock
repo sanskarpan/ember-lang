@@ -188,6 +188,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ember-ast",
+ "ember-bytecode",
+ "ember-compile",
  "ember-diag",
  "ember-lexer",
  "ember-parser",
@@ -195,6 +197,7 @@ dependencies = [
  "ember-span",
  "ember-tree",
  "ember-types",
+ "ember-vm",
 ]
 
 [[package]]
@@ -295,6 +298,16 @@ dependencies = [
 [[package]]
 name = "ember-vm"
 version = "0.1.0"
+dependencies = [
+ "ember-ast",
+ "ember-bytecode",
+ "ember-compile",
+ "ember-diag",
+ "ember-parser",
+ "ember-resolve",
+ "ember-span",
+ "rustc-hash",
+]
 
 [[package]]
 name = "ember-wasm"
