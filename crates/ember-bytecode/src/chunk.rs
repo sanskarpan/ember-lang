@@ -2,6 +2,7 @@ use crate::op::Op;
 use crate::value::Value;
 use ember_ast::Symbol;
 use ember_resolve::UpvalueDesc;
+use std::rc::Rc;
 
 #[derive(Default)]
 pub struct Chunk {
@@ -10,7 +11,7 @@ pub struct Chunk {
     /// One compiled function per `OP_CLOSURE` this chunk emits, referenced
     /// by index (a SEPARATE pool from `constants` — a `FunctionProto`
     /// isn't a `Value`, it's a whole nested `Chunk` plus metadata).
-    pub functions: Vec<FunctionProto>,
+    pub functions: Vec<Rc<FunctionProto>>,
     /// Run-length encoded: one `u32` per byte doubles chunk size for
     /// nothing, and consecutive instructions almost always share a line.
     pub lines: Vec<(u32, u32)>,
@@ -78,7 +79,7 @@ impl Chunk {
     /// definition, even two textually-identical closures compiled from
     /// different source locations.
     pub fn add_function(&mut self, proto: FunctionProto) -> u16 {
-        self.functions.push(proto);
+        self.functions.push(Rc::new(proto));
         (self.functions.len() - 1) as u16
     }
 }
@@ -88,6 +89,7 @@ mod tests {
     use super::*;
     use crate::op::Op;
     use crate::value::Value;
+    use std::rc::Rc;
 
     #[test]
     fn write_op_and_write_u8_append_bytes_and_track_lines() {
@@ -153,5 +155,24 @@ mod tests {
         let b = chunk.add_function(proto2);
         assert_ne!(a, b, "two distinct FunctionProtos must never share an index, even if superficially identical");
         assert_eq!(chunk.functions.len(), 2);
+    }
+
+    #[test]
+    fn add_function_returns_a_shareable_rc() {
+        let mut chunk = Chunk::new();
+        let mut interner = ember_ast::Interner::new();
+        let proto = FunctionProto {
+            chunk: Chunk::new(),
+            arity: 0,
+            upvalues: vec![],
+            name: interner.intern("f"),
+        };
+        let idx = chunk.add_function(proto);
+        let a = Rc::clone(&chunk.functions[idx as usize]);
+        let b = Rc::clone(&chunk.functions[idx as usize]);
+        assert!(
+            Rc::ptr_eq(&a, &b),
+            "both handles must point at the same allocation"
+        );
     }
 }
