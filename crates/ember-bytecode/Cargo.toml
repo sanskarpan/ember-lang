@@ -4,3 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ember-ast = { path = "../ember-ast" }
+ember-resolve = { path = "../ember-resolve" }
