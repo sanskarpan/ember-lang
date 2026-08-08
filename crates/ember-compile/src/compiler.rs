@@ -18,6 +18,7 @@ pub(crate) fn static_stack_effect(op: Op) -> Option<i32> {
         SetLocal | SetGlobal | SetUpvalue => Some(0),
         DefineGlobal => Some(-1),
         CloseUpvalue => Some(-1),
+        CloseUpvaluesFrom => Some(0), // closes in place; doesn't touch the stack
         GetField => Some(0), // consumes [base] (index is a compile-time constant operand, not a stack value), produces [value]
         GetIndex => Some(-1), // consumes [base, index] (both runtime stack values), produces [value]
         SetField => Some(-1),
@@ -477,22 +478,46 @@ impl<'a> Compiler<'a> {
     /// locals were pushed since `entry_local_count` and a single "tail"
     /// value now sits on top of all of them, tears the locals down
     /// (substituting `OP_CLOSE_UPVALUE` for `OP_POP` per `slot_is_captured`,
-    /// with the first-declared local pre-closed separately if needed)
-    /// while leaving exactly the tail value at `entry_local_count`'s
-    /// physical stack position. Shared by `compile_block`, and (this task)
-    /// by every match arm's own bindings plus the whole match's hidden
-    /// scrutinee local.
+    /// with every captured local in range pre-closed in place first) while
+    /// leaving exactly the tail value at `entry_local_count`'s physical
+    /// stack position. Shared by `compile_block`, and (this task) by every
+    /// match arm's own bindings plus the whole match's hidden scrutinee
+    /// local.
+    ///
+    /// The upfront `OP_CLOSE_UPVALUES_FROM entry_local_count` pre-close
+    /// step exists only for `entry_local_count` itself (the first-declared
+    /// local of this scope): its slot is the one that *survives* this
+    /// teardown — `OP_SET_LOCAL` below overwrites it in place with the
+    /// tail value rather than popping it — so if it's captured, its
+    /// upvalue must be closed, with its real value, before that overwrite.
+    /// `OP_CLOSE_UPVALUE` can't do this: it's zero-operand and always
+    /// targets whatever's physically on top of the stack, which is never
+    /// this slot (the tail value, and every other local declared after
+    /// it, still sit above it here) — no reordering of `OP_GET_LOCAL` +
+    /// `OP_CLOSE_UPVALUE` fixes that, since duplicating the value onto a
+    /// new top slot doesn't move the *already-recorded* open upvalue,
+    /// which still points at the original slot. `OP_CLOSE_UPVALUES_FROM`
+    /// closes in place, by slot, without touching the stack, sidestepping
+    /// the problem entirely. Emitting it with a threshold of
+    /// `entry_local_count` also harmlessly closes any *other* local in
+    /// this same range that happens to be captured too — safe, since none
+    /// of their slots are touched before the loop below removes them, and
+    /// idempotent, since the loop's own `OP_CLOSE_UPVALUE`/`OP_POP` choice
+    /// per slot doesn't care whether the upvalue was already closed here.
     fn emit_tail_scope_exit(&mut self, entry_local_count: u32, line: u32) {
         let declared = (self.current().local_count - entry_local_count) as usize;
         if declared == 0 {
             return;
         }
         let base_idx = self.current().declared_slots.len() - declared;
-        if let Some(first_slot) = self.current().declared_slots[base_idx] {
-            if self.slot_is_captured(first_slot) {
-                self.emit_get_local(entry_local_count, line);
-                self.current().emit_op(Op::CloseUpvalue, line);
-            }
+        let any_captured = (base_idx..base_idx + declared).any(|i| {
+            self.current().declared_slots[i]
+                .map(|s| self.slot_is_captured(s))
+                .unwrap_or(false)
+        });
+        if any_captured {
+            self.current().emit_op(Op::CloseUpvaluesFrom, line);
+            self.current().chunk.write_u8(entry_local_count as u8, line);
         }
         self.current().emit_op(Op::SetLocal, line);
         self.current().chunk.write_u8(entry_local_count as u8, line);
@@ -1470,18 +1495,45 @@ pub fn compile(
             compiler.compile_stmt(s);
         }
     }
-    for &s in stmts {
-        if !matches!(
-            compiler.ast.stmt(s),
-            ember_ast::Stmt::Fn { .. }
-                | ember_ast::Stmt::TypeDecl { .. }
-                | ember_ast::Stmt::StructDecl { .. }
-        ) {
-            compiler.compile_stmt(s);
+
+    let non_hoisted: Vec<Idx<ember_ast::Stmt>> = stmts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            !matches!(
+                compiler.ast.stmt(s),
+                ember_ast::Stmt::Fn { .. }
+                    | ember_ast::Stmt::TypeDecl { .. }
+                    | ember_ast::Stmt::StructDecl { .. }
+            )
+        })
+        .collect();
+
+    if non_hoisted.is_empty() {
+        compiler.current().emit_op(Op::Nil, 0);
+    } else {
+        let last_index = non_hoisted.len() - 1;
+        for (i, &s) in non_hoisted.iter().enumerate() {
+            if i == last_index {
+                // The program's result: an ExprStmt's own value flows
+                // straight through (compile_expr only, deliberately
+                // bypassing compile_stmt's own Stmt::ExprStmt arm, which
+                // would pop it) — anything else's "value" is Nil, matching
+                // ember-tree::exec_stmt_uninstrumented's own behavior for
+                // every non-ExprStmt statement kind.
+                if let ember_ast::Stmt::ExprStmt(e) = compiler.ast.stmt(s) {
+                    let e = *e;
+                    compiler.compile_expr(e);
+                } else {
+                    compiler.compile_stmt(s);
+                    compiler.current().emit_op(Op::Nil, 0);
+                }
+            } else {
+                compiler.compile_stmt(s);
+            }
         }
     }
 
-    compiler.current().emit_op(Op::Nil, 0);
     compiler.current().chunk.write_op(Op::Return, 0);
     compiler.current().adjust_depth(-1);
 
@@ -2286,5 +2338,41 @@ mod tests {
         assert!(resolve_diags.is_empty(), "{resolve_diags:?}");
         let proto = compile(&ast, &mut interner, &bindings, &stmts); // must not panic
         assert_eq!(proto.chunk.functions.len(), 2);
+    }
+
+    #[test]
+    fn the_last_top_level_expression_statements_value_is_the_programs_result() {
+        let src = "let a = 3; let b = 4; a * a + b * b;";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "{parse_diags:?}");
+        let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+        assert!(resolve_diags.is_empty(), "{resolve_diags:?}");
+        let proto = compile(&ast, &mut interner, &bindings, &stmts);
+        let out = ember_bytecode::disasm::disassemble_chunk(&proto.chunk, "test", &interner);
+        // Only 0 OP_POPs for the whole program: `a`/`b`'s own Lets don't pop
+        // (their value permanently occupies their slot, as always), and the
+        // final `a * a + b * b` must NOT be popped either now, unlike an
+        // ordinary (non-last) ExprStmt.
+        assert!(!out.contains("OP_POP"), "{out}");
+        let last_two: Vec<&str> = out.lines().rev().take(2).collect();
+        assert!(last_two[0].contains("OP_RETURN"), "{out}");
+        assert!(
+            last_two[1].contains("OP_ADD"),
+            "the last computed value must flow straight into Return, not through a Pop/Nil: {out}"
+        );
+    }
+
+    #[test]
+    fn a_program_ending_in_a_non_expression_statement_still_returns_nil() {
+        let src = "let mut _x = 1;";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "{parse_diags:?}");
+        let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+        assert!(resolve_diags.is_empty(), "{resolve_diags:?}");
+        let proto = compile(&ast, &mut interner, &bindings, &stmts);
+        let out = ember_bytecode::disasm::disassemble_chunk(&proto.chunk, "test", &interner);
+        let last_two: Vec<&str> = out.lines().rev().take(2).collect();
+        assert!(last_two[0].contains("OP_RETURN"), "{out}");
+        assert!(last_two[1].contains("OP_NIL"), "a Let as the final statement must still push an explicit Nil result, matching ember-tree's Stmt::Let => Flow::Normal(Value::Nil): {out}");
     }
 }

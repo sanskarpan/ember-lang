@@ -431,9 +431,32 @@ impl<'a> Resolver<'a> {
             }
             Expr::Match { scrutinee, arms } => {
                 self.resolve_expr(*scrutinee);
+                // Reserve a hidden local slot for the match's own
+                // scrutinee, for the whole match, before resolving any
+                // arm's pattern bindings — mirrors `ember-compile`'s
+                // `compile_match`, which evaluates the scrutinee once into
+                // its own local slot and keeps it pinned there across
+                // every arm's `compile_pattern_test`/`compile_pattern_bind`
+                // (each arm's `Op::Destructure`/`Op::GetField` reads it
+                // back via `scrutinee_slot`), releasing it only once via a
+                // single trailing `emit_tail_scope_exit` after every arm.
+                // Without this reservation here, `declare_pattern_bindings`
+                // hands out slot numbers as though the scrutinee occupied
+                // no slot at all, one lower than where the compiler
+                // actually places each binding — so `Expr::Var` reads for
+                // a pattern-bound name (e.g. `r` in `Circle(r) => r`) come
+                // out one slot short, silently reading whatever sits right
+                // before the real binding (the scrutinee itself, for a
+                // single-binding pattern) instead.
+                let current = self.functions.len() - 1;
+                self.functions[current].next_slot += 1;
+                if self.functions[current].next_slot > self.functions[current].high_water {
+                    self.functions[current].high_water = self.functions[current].next_slot;
+                }
                 for arm in arms {
                     self.resolve_match_arm(arm);
                 }
+                self.functions[current].next_slot -= 1;
             }
             Expr::List { items } => {
                 for i in items {
