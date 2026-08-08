@@ -44,6 +44,19 @@ pub enum Op {
     TestVariant = 37,
     Destructure = 38,
     Print = 39,
+    /// Closes every open upvalue at or above a given local-relative slot,
+    /// *without* touching the stack's height (no push, no pop) — unlike
+    /// `CloseUpvalue`, which always targets whatever's currently on top
+    /// and pops it. Needed for `ember-compile`'s block-tail-expression
+    /// teardown: the block's first-declared local's stack slot survives
+    /// (it gets overwritten in place with the tail value via a following
+    /// `OP_SET_LOCAL`, never popped), so if it's captured, its upvalue
+    /// must be closed *in place*, before that overwrite, while it is
+    /// almost never the physical top of the stack (the tail value and
+    /// every other local declared after it still sit above it at that
+    /// point) — something `OP_CLOSE_UPVALUE`'s top-of-stack-only, zero-
+    /// operand contract cannot express.
+    CloseUpvaluesFrom = 40,
 }
 
 impl Op {
@@ -94,6 +107,7 @@ impl Op {
             37 => TestVariant,
             38 => Destructure,
             39 => Print,
+            40 => CloseUpvaluesFrom,
             _ => return None,
         })
     }
@@ -107,7 +121,8 @@ impl Op {
         Some(match self {
             Nil | True | False | Pop | CloseUpvalue | Equal | Greater | Less | Add | Sub | Mul
             | Div | Mod | Not | Negate | Return | GetIndex | SetIndex | Print => 0,
-            GetLocal | SetLocal | GetUpvalue | SetUpvalue | Call | Destructure => 1,
+            GetLocal | SetLocal | GetUpvalue | SetUpvalue | Call | Destructure
+            | CloseUpvaluesFrom => 1,
             Constant | GetGlobal | SetGlobal | DefineGlobal | GetField | SetField | Jump
             | JumpIfFalse | JumpIfTrue | Loop | Closure | MakeList | TestVariant => 2,
             MakeRecord | MakeAdt => return None,
@@ -162,6 +177,7 @@ mod tests {
             Op::TestVariant,
             Op::Destructure,
             Op::Print,
+            Op::CloseUpvaluesFrom,
         ];
         for op in all {
             assert_eq!(
