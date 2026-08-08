@@ -4,3 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ember-span = { path = "../ember-span" }
+ember-ast = { path = "../ember-ast" }
+ember-lexer = { path = "../ember-lexer" }
+ember-resolve = { path = "../ember-resolve" }
+ember-bytecode = { path = "../ember-bytecode" }
+rustc-hash = "2"
+
+[dev-dependencies]
+ember-parser = { path = "../ember-parser" }
+ember-diag = { path = "../ember-diag" }
