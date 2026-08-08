@@ -1,1 +1,4 @@
-//! Bytecode chunk representation and disassembler. Implemented in Phase 8.
+pub mod chunk;
+pub mod disasm;
+pub mod op;
+pub mod value;
