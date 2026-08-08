@@ -177,6 +177,10 @@ dependencies = [
 [[package]]
 name = "ember-bytecode"
 version = "0.1.0"
+dependencies = [
+ "ember-ast",
+ "ember-resolve",
+]
 
 [[package]]
 name = "ember-cli"
@@ -196,6 +200,16 @@ dependencies = [
 [[package]]
 name = "ember-compile"
 version = "0.1.0"
+dependencies = [
+ "ember-ast",
+ "ember-bytecode",
+ "ember-diag",
+ "ember-lexer",
+ "ember-parser",
+ "ember-resolve",
+ "ember-span",
+ "rustc-hash",
+]
 
 [[package]]
 name = "ember-diag"
