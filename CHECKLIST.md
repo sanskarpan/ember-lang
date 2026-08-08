@@ -263,36 +263,46 @@
 
 ## Phase 8 — Bytecode & Compiler (28 tasks)
 
-- [ ] 🔴 `Op` enum `#[repr(u8)]` with all ~35 opcodes
-- [ ] 🔴 `Chunk { code: Vec<u8>, constants: Vec<Value>, lines: Vec<(u32, u32)> }`
-- [ ] 🔴 **Line info run-length encoded** — one `u32` per byte doubles chunk size for nothing
-- [ ] 🔴 Constant pool with deduplication
-- [ ] 🔴 `disassemble_chunk` / `disassemble_instruction` — with operand names resolved, not raw indices
+- [x] 🔴 `Op` enum `#[repr(u8)]` with all ~35 opcodes
+- [x] 🔴 `Chunk { code: Vec<u8>, constants: Vec<Value>, lines: Vec<(u32, u32)> }` — plus a `functions: Vec<FunctionProto>` pool, a separate constant-pool-adjacent table `OP_CLOSURE` indexes into (not itself a `Value` variant — see below)
+- [x] 🔴 **Line info run-length encoded** — one `u32` per byte doubles chunk size for nothing
+- [x] 🔴 Constant pool with deduplication — `add_constant` dedups by `PartialEq`; `add_function` deliberately does not (two structurally-identical closures compiled from different call sites must stay distinct)
+- [x] 🔴 `disassemble_chunk` / `disassemble_instruction` — with operand names resolved, not raw indices
 
 **Compiler**
-- [ ] 🔴 Walk the typed AST, emit bytecode; single pass, no separate IR
-- [ ] 🔴 Literals → `OP_CONSTANT` (with `OP_NIL`/`OP_TRUE`/`OP_FALSE` fast paths)
-- [ ] 🔴 Locals → `OP_GET_LOCAL`/`OP_SET_LOCAL` with the resolver's slot
-- [ ] 🔴 Upvalues → `OP_GET_UPVALUE`/`OP_SET_UPVALUE`
-- [ ] 🔴 Globals → `OP_DEFINE_GLOBAL`/`OP_GET_GLOBAL`/`OP_SET_GLOBAL`
-- [ ] 🔴 `emit_jump` placeholder + `patch_jump` backpatching
-- [ ] 🔴 `if/else` → `JUMP_IF_FALSE` + `JUMP`; both arms leave exactly one value on the stack
-- [ ] 🔴 `while` → condition, `JUMP_IF_FALSE`, body, `LOOP` back
-- [ ] 🔴 `for … in range` desugared to a while loop with a hidden counter local
-- [ ] 🔴 `break`/`continue` → forward/backward jumps, patched at loop end; track a loop stack
-- [ ] 🔴 `&&`/`||` short-circuit via jumps, not a call
-- [ ] 🔴 Function compilation into its own `Chunk`; `OP_CLOSURE` with an upvalue descriptor list inline in the bytecode
-- [ ] 🔴 **`OP_CLOSE_UPVALUE` emitted at scope exit for every captured local**
-- [ ] 🔴 `OP_RETURN`; implicit `nil` return when a function falls off the end
-- [ ] 🔴 Pattern matching compiled to `TEST_VARIANT` + jump chains + `DESTRUCTURE`
-- [ ] 🔴 Assert stack effect balance per statement (debug builds) — catches a whole class of codegen bugs immediately
-- [ ] 🟡 Constant folding for literal arithmetic
-- [ ] 🟡 Peephole: `NOT` + `JUMP_IF_FALSE` → `JUMP_IF_TRUE`
-- [ ] 🔴 Test: disassembly snapshots for 15 programs
-- [ ] 🔴 Test: jump offsets correct for nested if/while
-- [ ] 🔴 Test: `break` inside a nested loop targets the right loop
-- [ ] 🔴 Test: `OP_CLOSE_UPVALUE` emitted exactly where a captured local dies
-- [ ] 🔴 **Start the conformance suite here** — every program written from now on goes in `tests/conformance/`
+- [x] 🔴 Walk the AST, emit bytecode; single pass, no separate IR — **deviates from the checklist's literal "typed AST" wording**: `ember-compile` depends on `ember-resolve::Bindings` (slots/upvalues/globals), not `ember-types::TypeInfo`. Opcodes are generic/untyped, checked at runtime by a future VM — decided and approved in this phase's own design doc before implementation began, not a shortcut taken mid-implementation.
+- [x] 🔴 Literals → `OP_CONSTANT` (with `OP_NIL`/`OP_TRUE`/`OP_FALSE` fast paths)
+- [x] 🔴 Locals → `OP_GET_LOCAL`/`OP_SET_LOCAL` with the resolver's slot — routed through a `physical_slot` translation layer for `for`-loop-shifted regions (see below); identity function everywhere else
+- [x] 🔴 Upvalues → `OP_GET_UPVALUE`/`OP_SET_UPVALUE`
+- [x] 🔴 Globals → `OP_DEFINE_GLOBAL`/`OP_GET_GLOBAL`/`OP_SET_GLOBAL`
+- [x] 🔴 `emit_jump` placeholder + `patch_jump` backpatching
+- [x] 🔴 `if/else` → `JUMP_IF_FALSE` + `JUMP`; both arms leave exactly one value on the stack
+- [x] 🔴 `while` → condition, `JUMP_IF_FALSE`, body, `LOOP` back
+- [x] 🔴 `for … in range` desugared to a while loop with a hidden counter local — **reinterpreted**: ember's `for x in xs` iterates a list expression, not a literal range syntax (the tree-walker never supported `Value::Range` either); desugars to an index-counter `while` over two compiler-only hidden locals (the iterable, the counter). Since the resolver has no idea those hidden locals exist, it assigns `binding`'s slot assuming they don't — a `SlotShift`/`physical_slot` mechanism corrects every resolver-assigned slot from that point on (in that frame) to its real, shifted physical position. This is the single most consequential design decision worked out during implementation, not anticipated by `SPEC.md`.
+- [x] 🔴 `break`/`continue` → forward/backward jumps, patched at loop end; track a loop stack — cleanup pops emitted before the jump, unwinding whatever locals accumulated since the loop body started (correctly handles `break`/`continue` nested several `Block`s deep)
+- [x] 🔴 `&&`/`||` short-circuit via jumps, not a call
+- [x] 🔴 Function compilation into its own `Chunk`; `OP_CLOSURE` with an upvalue descriptor list — **deviates from "inline in the bytecode"**: the descriptor list (`Vec<UpvalueDesc>`, reused directly from `ember-resolve`) lives on `FunctionProto` itself, a Rust-level field set once at compile time, not encoded as trailing bytes in the instruction stream the way Crafting-Interpreters-style VMs do it. Functionally equivalent (a future VM reads the same descriptors either way) but a real, deliberate deviation from the checklist's literal wording, made possible because `FunctionProto` already carries structured metadata a raw bytecode stream doesn't have room for.
+- [x] 🔴 **`OP_CLOSE_UPVALUE` emitted at scope exit for every captured local** — emitted only for scope exits *short of* a full function return (`Block`, loop cleanup, `break`/`continue` unwind). A function's own parameters/top-level-body locals are closed for free by a future VM's `OP_RETURN` handling (`SPEC.md §11`'s own sketch has the VM call `close_upvalues(frame.slot_base)` unconditionally on return) — the compiler emits nothing extra for that case, by design, not by omission.
+- [x] 🔴 `OP_RETURN`; implicit `nil` return when a function falls off the end — satisfied by construction: every function body compiles as an `Expr::Block`, which always pushes `Nil` when it has no `tail`, so `compile_function` never needs to special-case an empty body.
+- [x] 🔴 Pattern matching compiled to `TEST_VARIANT` + jump chains + `DESTRUCTURE` — compiled via a two-pass test/bind split (see note below); `Record` patterns reuse `OP_GET_FIELD` (name-based) rather than `OP_DESTRUCTURE` (position-based only) — a refinement of the checklist's wording, not a contradiction, since `Destructure`'s bytecode format (a single positional-index operand) has no room for a name.
+- [x] 🔴 Assert stack effect balance per statement (debug builds) — wired as a `debug_assert_eq!` wrapping every `compile_stmt` call, automatically covering every statement kind. This assertion earned its keep immediately: it caught two real, independently-confirmed stack-accounting bugs during implementation (see notes below) that would otherwise have silently produced corrupt bytecode.
+- [ ] 🟡 Constant folding for literal arithmetic — deferred, no measured performance need yet (Non-goal, stated up front in the design doc)
+- [ ] 🟡 Peephole: `NOT` + `JUMP_IF_FALSE` → `JUMP_IF_TRUE` — deferred, same reason
+- [x] 🔴 Test: disassembly snapshots for 15 programs — satisfied cumulatively, not as one dedicated batch: `ember-bytecode` (12 tests) + `ember-compile` (56 tests) assert against real disassembler output for their own constructs across every task, comfortably exceeding 15 distinct compiled programs in total.
+- [x] 🔴 Test: jump offsets correct for nested if/while — a dedicated test compiles `while true { if true { 1; } else { 2; } }` and cross-checks every jump's disassembled target against a real printed instruction offset.
+- [x] 🔴 Test: `break` inside a nested loop targets the right loop
+- [x] 🔴 Test: `OP_CLOSE_UPVALUE` emitted exactly where a captured local dies
+- [x] 🔴 **Start the conformance suite here** — `tests/conformance/` (6 `.em`/`.expected` fixture pairs: arithmetic, control flow, lists/`for`, structs, ADTs/`match`, closures) plus a harness in `ember-cli/tests/conformance.rs` that runs each through the tree-walker. The actual tree-walker-vs-bytecode+VM cross-check needs a VM that doesn't exist yet — infrastructure and the tree-walker side only, as the design doc's own Non-goals stated; a future phase extends the same harness with a second assertion once the VM exists.
+
+**Design decisions and gaps beyond the checklist's literal scope, found or made during implementation:**
+- **Top-level dual registration:** every top-level `let`/`fn`/`type`/`struct` is *both* a `Resolution::Local` (for same-frame references, via a real stack slot) and registered as a `Resolution::Global` (`OP_DEFINE_GLOBAL`, for nested functions' cross-frame references) — worked out from scratch in this phase's design doc, since neither `SPEC.md` nor the checklist addresses how a nested closure reaches a top-level binding that lives in a sibling stack frame it can't see into.
+- **Native-global slot offset:** `ember-resolve`'s `seed_native_globals` pre-declares the 8 native functions into the top-level scope before any user code, consuming slots 0-7 — the top-level `FunctionCompiler`'s `local_count` must seed to 8, not 0, or every top-level local's dual-registration/block-scope-exit bytecode targets the wrong physical slot. Found and fixed during Task 9's implementation (not anticipated by the plan).
+- **Two mutually-exclusive-branches `stack_depth` double-counting bug**, found and fixed independently three separate times across implementation (`if`/`&&`/`||` in Task 9; `break`/`continue` cleanup in Task 10; `finish_and_chain`/`Or`-pattern binding/per-match-arm binding in Task 14): `stack_depth` is a straight-line running sum with no notion that two code paths in the bytecode stream are alternatives, not a sequence — left unfixed, it would silently sum both a taken and not-taken path's effect. Fixed everywhere by snapshotting `stack_depth` at the divergence point and restoring it before compiling each subsequent alternative.
+- **Two-pass pattern compilation** (`compile_pattern_test` / `compile_pattern_bind`): a naive single-pass compiler cannot safely support `Or`-patterns, since a failed alternative may have already bound names it now needs to unwind inconsistently. Splitting into a side-effect-free test pass and a bind pass that only ever runs after a confirmed match sidesteps the problem entirely — no rollback is ever needed, because a failed test never bound anything.
+- **`Pattern::Tuple`** still compiles to "never matches" (`OP_FALSE`) — inertness carried forward from Phase 5/6/7 (no `Value::Tuple` exists anywhere in this pipeline). Not new to this phase.
+- **`Pattern::List`'s `rest` binding does not bind the real remaining sublist** — a genuinely **new** gap, unlike `Tuple`'s (the tree-walker supports `rest` correctly). Building a real sublist at runtime needs a way to construct a list of a *runtime-determined* length, and `OP_MAKE_LIST`'s count operand is fixed at compile time — there's no `slice`/`tail` opcode or native to fall back on. The length/prefix are still tested correctly (`len(xs) >= items.len()` plus every fixed-position item); a `rest` binding is declared as `Nil` — wrong value, but the resolver slot is still correctly reserved, so nothing declared afterward in the same scope misaligns. A future phase should add either a slicing opcode or a native.
+- **`Or`-pattern alternatives that bind the same name to different resolver slots** — a deeper, unverified gap found during Task 14 (traced through `ember-resolve`'s own code and doc comments, which call the underlying slot-per-occurrence allocation an explicit simplification): for `Circle(r) | Square(r) => r`, the resolver allocates a *separate* slot per occurrence of `r`, with only the last surviving in scope for the arm body's `Var` lookup — but at runtime only one alternative's bind ever executes, always into the *first* occurrence's physical slot. This cannot be verified without a VM to actually execute bytecode against, and fixing it needs joint resolver+compiler changes (tracking which specific slot each `Bind` occurrence resolves to). Flagged for whoever builds the VM and starts real conformance cross-checking — a `Match` arm with a repeated-name `Or`-pattern is exactly the kind of program that would silently misbehave.
+- **`len` called directly via a narrow `emit_len_call` helper** (bypassing the general `Expr::Call` compiler) — used by both the `for`-loop desugaring and `List`-pattern length checks, since both need to call a known native before a general call-compiler exists yet in the task order, and both remain narrower/simpler than walking an arbitrary AST `callee`.
 
 ---
 
