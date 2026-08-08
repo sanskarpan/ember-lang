@@ -29,6 +29,11 @@ enum Command {
     /// program, printing its final value or a rendered runtime-error
     /// diagnostic.
     Run { file: String },
+    /// Parse, resolve, typecheck, check exhaustiveness, then compile to
+    /// bytecode and run it on the VM, printing its final value or a
+    /// rendered runtime-error diagnostic — same pipeline as `run`, but the
+    /// bytecode backend instead of the tree-walker.
+    Vm { file: String },
 }
 
 fn main() -> ExitCode {
@@ -39,6 +44,7 @@ fn main() -> ExitCode {
         Command::Resolve { file } => run_resolve(&file),
         Command::Typecheck { file } => run_typecheck(&file),
         Command::Run { file } => run_run(&file),
+        Command::Vm { file } => run_vm(&file),
     }
 }
 
@@ -209,6 +215,57 @@ fn run_run(path: &str) -> ExitCode {
         println!("{}", ember_tree::display_value(&v, &interner));
     }
     ExitCode::SUCCESS
+}
+
+fn run_vm(path: &str) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::from(3);
+    };
+    let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(&src);
+    if !parse_diags.is_empty() {
+        return print_diagnostics(&parse_diags, path, &src);
+    }
+
+    let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+    if resolve_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(&resolve_diags, path, &src);
+    }
+
+    let (info, infer_diags) = ember_types::infer(&ast, &mut interner, &stmts);
+    if infer_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(&infer_diags, path, &src);
+    }
+
+    let exhaustive_diags = ember_types::check_exhaustiveness(&ast, &interner, &info, &stmts);
+    if exhaustive_diags
+        .iter()
+        .any(|d| d.severity == ember_diag::Severity::Error)
+    {
+        return print_diagnostics(&exhaustive_diags, path, &src);
+    }
+
+    let proto = ember_compile::compile(&ast, &mut interner, &bindings, &stmts);
+    let mut vm = ember_vm::vm::Vm::new(proto);
+    match vm.run() {
+        Ok(v) => {
+            println!("{}", ember_vm::value::display_value(&v));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let use_color = std::env::var_os("NO_COLOR").is_none();
+            println!(
+                "{}",
+                ember_diag::render::render(&e.to_diagnostic(&interner), path, &src, use_color)
+            );
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn print_diagnostics(diags: &[ember_diag::Diagnostic], path: &str, src: &str) -> ExitCode {

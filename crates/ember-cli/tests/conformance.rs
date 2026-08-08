@@ -11,7 +11,7 @@ fn has_errors(diags: &[ember_diag::Diagnostic]) -> bool {
 }
 
 #[test]
-fn tree_walker_output_matches_every_captured_fixture() {
+fn both_backends_produce_identical_output_matching_every_captured_fixture() {
     let dir = conformance_dir();
     let mut checked = 0;
     let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
@@ -33,9 +33,7 @@ fn tree_walker_output_matches_every_captured_fixture() {
             "{path:?}: parse diags: {parse_diags:?}"
         );
 
-        let mut resolver = ember_resolve::Resolver::new(&ast, &mut interner);
-        resolver.resolve_program(&stmts);
-        let resolve_diags = resolver.diagnostics().to_vec();
+        let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
         assert!(
             !has_errors(&resolve_diags),
             "{path:?}: resolve diags: {resolve_diags:?}"
@@ -53,13 +51,41 @@ fn tree_walker_output_matches_every_captured_fixture() {
             "{path:?}: exhaustiveness diags: {exhaustive_diags:?}"
         );
 
-        let (result, err) = ember_tree::interpret(&ast, &interner, &stmts);
-        assert!(err.is_none(), "{path:?}: unexpected runtime error: {err:?}");
-        let actual = match result {
+        let (tree_result, tree_err) = ember_tree::interpret(&ast, &interner, &stmts);
+        assert!(
+            tree_err.is_none(),
+            "{path:?}: tree-walker runtime error: {tree_err:?}"
+        );
+        let tree_actual = match tree_result {
             Some(v) => ember_tree::display_value(&v, &interner),
             None => String::new(),
         };
-        assert_eq!(actual.trim(), expected.trim(), "{path:?}: output mismatch");
+        assert_eq!(
+            tree_actual.trim(),
+            expected.trim(),
+            "{path:?}: tree-walker output mismatch"
+        );
+
+        let proto = ember_compile::compile(&ast, &mut interner, &bindings, &stmts);
+        let mut vm = ember_vm::vm::Vm::new(proto);
+        let vm_actual = match vm.run() {
+            Ok(v) => ember_vm::value::display_value(&v),
+            Err(e) => panic!(
+                "{path:?}: VM runtime error: {}",
+                e.to_diagnostic(&interner).message
+            ),
+        };
+        assert_eq!(
+            vm_actual.trim(),
+            expected.trim(),
+            "{path:?}: VM output mismatch"
+        );
+        assert_eq!(
+            tree_actual.trim(),
+            vm_actual.trim(),
+            "{path:?}: the two backends disagree with each other"
+        );
+
         checked += 1;
     }
     assert!(
