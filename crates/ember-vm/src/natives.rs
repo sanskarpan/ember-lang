@@ -1,15 +1,20 @@
 use crate::error::RuntimeError;
 use crate::value::{display_value, Value};
-use std::rc::Rc;
+use ember_gc::GcHeap;
 
-pub fn print(args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
+#[cfg(test)]
+use crate::value::ListObj;
+#[cfg(test)]
+use std::cell::RefCell;
+
+pub fn print(args: &[Value], _line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     println!("{}", display_value(&args[0]));
     Ok(Value::Nil)
 }
 
-pub fn len(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
+pub fn len(args: &[Value], line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     match &args[0] {
-        Value::List(l) => Ok(Value::Int(l.borrow().len() as i64)),
+        Value::List(l) => Ok(Value::Int(l.0.borrow().len() as i64)),
         other => Err(RuntimeError::new(
             format!("len expects a list, found {other:?}"),
             line,
@@ -17,10 +22,10 @@ pub fn len(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
     }
 }
 
-pub fn push(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
+pub fn push(args: &[Value], line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::List(l) => {
-            l.borrow_mut().push(args[1].clone());
+            l.0.borrow_mut().push(args[1].clone());
             Ok(Value::Nil)
         }
         other => Err(RuntimeError::new(
@@ -30,18 +35,18 @@ pub fn push(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
     }
 }
 
-pub fn clock(_args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
+pub fn clock(_args: &[Value], _line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     Ok(Value::Float(now.as_secs_f64()))
 }
 
-pub fn str_fn(args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
-    Ok(Value::Str(Rc::new(display_value(&args[0]))))
+pub fn str_fn(args: &[Value], _line: u32, gc: &mut GcHeap) -> Result<Value, RuntimeError> {
+    Ok(Value::Str(gc.intern_str(&display_value(&args[0]))))
 }
 
-pub fn int_fn(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
+pub fn int_fn(args: &[Value], line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(f) => Ok(Value::Int(*f as i64)),
@@ -57,7 +62,7 @@ pub fn int_fn(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
     }
 }
 
-pub fn float_fn(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
+pub fn float_fn(args: &[Value], line: u32, _gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Float(f) => Ok(Value::Float(*f)),
         Value::Int(n) => Ok(Value::Float(*n as f64)),
@@ -73,7 +78,7 @@ pub fn float_fn(args: &[Value], line: u32) -> Result<Value, RuntimeError> {
     }
 }
 
-pub fn type_of(args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
+pub fn type_of(args: &[Value], _line: u32, gc: &mut GcHeap) -> Result<Value, RuntimeError> {
     let name = match &args[0] {
         Value::Int(_) => "Int".to_string(),
         Value::Float(_) => "Float".to_string(),
@@ -82,13 +87,13 @@ pub fn type_of(args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
         Value::Str(_) => "String".to_string(),
         Value::List(_) => "List".to_string(),
         Value::Closure(_) | Value::Native(_) => "Function".to_string(),
-        Value::Adt(a) => a.type_name.to_string(),
-        Value::Record { name, .. } => name.to_string(),
+        Value::Adt(a) => (*a.type_name).clone(),
+        Value::Record { name, .. } => (**name).clone(),
     };
-    Ok(Value::Str(Rc::new(name)))
+    Ok(Value::Str(gc.intern_str(&name)))
 }
 
-type NativeImpl = fn(&[Value], u32) -> Result<Value, RuntimeError>;
+type NativeImpl = fn(&[Value], u32, &mut GcHeap) -> Result<Value, RuntimeError>;
 
 pub const NATIVES: &[(&str, usize, NativeImpl)] = &[
     ("print", 1, print),
@@ -104,37 +109,40 @@ pub const NATIVES: &[(&str, usize, NativeImpl)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     #[test]
     fn len_reports_list_length() {
-        let list = Value::List(Rc::new(RefCell::new(vec![
+        let mut gc = GcHeap::new();
+        let list = Value::List(gc.allocate(ListObj(RefCell::new(vec![
             Value::Int(1),
             Value::Int(2),
             Value::Int(3),
-        ])));
-        let result = len(&[list], 1).unwrap();
+        ]))));
+        let result = len(&[list], 1, &mut gc).unwrap();
         assert!(matches!(result, Value::Int(3)));
     }
 
     #[test]
     fn len_rejects_a_non_list() {
-        assert!(len(&[Value::Int(1)], 1).is_err());
+        let mut gc = GcHeap::new();
+        assert!(len(&[Value::Int(1)], 1, &mut gc).is_err());
     }
 
     #[test]
     fn push_appends_in_place() {
-        let list = Value::List(Rc::new(RefCell::new(vec![Value::Int(1)])));
-        push(&[list.clone(), Value::Int(2)], 1).unwrap();
+        let mut gc = GcHeap::new();
+        let list = Value::List(gc.allocate(ListObj(RefCell::new(vec![Value::Int(1)]))));
+        push(&[list.clone(), Value::Int(2)], 1, &mut gc).unwrap();
         match &list {
-            Value::List(l) => assert_eq!(l.borrow().len(), 2),
+            Value::List(l) => assert_eq!(l.0.borrow().len(), 2),
             _ => unreachable!(),
         }
     }
 
     #[test]
     fn str_formats_any_value() {
-        let result = str_fn(&[Value::Int(42)], 1).unwrap();
+        let mut gc = GcHeap::new();
+        let result = str_fn(&[Value::Int(42)], 1, &mut gc).unwrap();
         match result {
             Value::Str(s) => assert_eq!(*s, "42"),
             other => panic!("expected Str, got {other:?}"),
@@ -143,42 +151,47 @@ mod tests {
 
     #[test]
     fn int_parses_strings_and_truncates_floats() {
+        let mut gc = GcHeap::new();
         assert!(matches!(
-            int_fn(&[Value::Float(3.9)], 1).unwrap(),
+            int_fn(&[Value::Float(3.9)], 1, &mut gc).unwrap(),
             Value::Int(3)
         ));
-        assert!(matches!(
-            int_fn(&[Value::Str(Rc::new("42".to_string()))], 1).unwrap(),
-            Value::Int(42)
-        ));
-        assert!(int_fn(&[Value::Str(Rc::new("nope".to_string()))], 1).is_err());
+        let s = Value::Str(gc.intern_str("42"));
+        assert!(matches!(int_fn(&[s], 1, &mut gc).unwrap(), Value::Int(42)));
+        let bad = Value::Str(gc.intern_str("nope"));
+        assert!(int_fn(&[bad], 1, &mut gc).is_err());
     }
 
     #[test]
     fn float_parses_strings_and_widens_ints() {
-        assert!(matches!(float_fn(&[Value::Int(3)], 1).unwrap(), Value::Float(f) if f == 3.0));
+        let mut gc = GcHeap::new();
+        assert!(matches!(
+            float_fn(&[Value::Int(3)], 1, &mut gc).unwrap(),
+            Value::Float(f) if f == 3.0
+        ));
     }
 
     #[test]
     fn type_of_names_every_kind_including_records_and_adts_by_their_own_name() {
-        assert_eq!(
-            type_of(&[Value::Int(1)], 1).unwrap(),
-            Value::Str(Rc::new("Int".to_string()))
-        );
-        let adt = Value::Adt(Rc::new(crate::value::AdtValue {
-            type_name: Rc::new("Shape".to_string()),
-            variant: Rc::new("Circle".to_string()),
+        let mut gc = GcHeap::new();
+        let int_name = type_of(&[Value::Int(1)], 1, &mut gc).unwrap();
+        assert!(matches!(int_name, Value::Str(s) if *s == "Int"));
+
+        let type_name = gc.intern_str("Shape");
+        let variant = gc.intern_str("Circle");
+        let adt = Value::Adt(gc.allocate(crate::value::AdtValue {
+            type_name,
+            variant,
             fields: vec![],
         }));
-        assert_eq!(
-            type_of(&[adt], 1).unwrap(),
-            Value::Str(Rc::new("Shape".to_string()))
-        );
+        let adt_name = type_of(&[adt], 1, &mut gc).unwrap();
+        assert!(matches!(adt_name, Value::Str(s) if *s == "Shape"));
     }
 
     #[test]
     fn clock_returns_a_float() {
-        assert!(matches!(clock(&[], 1).unwrap(), Value::Float(_)));
+        let mut gc = GcHeap::new();
+        assert!(matches!(clock(&[], 1, &mut gc).unwrap(), Value::Float(_)));
     }
 
     #[test]

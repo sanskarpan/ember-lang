@@ -8,9 +8,14 @@ ember-span = { path = "../ember-span" }
 ember-diag = { path = "../ember-diag" }
 ember-ast = { path = "../ember-ast" }
 ember-bytecode = { path = "../ember-bytecode" }
+ember-gc = { path = "../ember-gc" }
 rustc-hash = "2"
 
 [dev-dependencies]
 ember-parser = { path = "../ember-parser" }
 ember-resolve = { path = "../ember-resolve" }
 ember-compile = { path = "../ember-compile" }
+
+[features]
+gc-stress = ["ember-gc/gc-stress"]
+gc-log = ["ember-gc/gc-log"]
