@@ -346,26 +346,28 @@
 
 ## Phase 10 — Garbage Collector (20 tasks)
 
-- [ ] 🔴 `ObjHeader { marked: bool, next: Option<Gc<Obj>>, kind: ObjKind }`
-- [ ] 🔴 Intrusive linked list of all allocations
-- [ ] 🔴 `Gc<T>` handle (Copy) with deref
-- [ ] 🔴 `allocate<T>()` tracking `bytes_allocated`, triggering GC past `next_gc`
-- [ ] 🔴 `mark_roots`: stack, call frames, open upvalues, globals
-- [ ] 🔴 **`mark_compiler_roots`** — functions under construction are unreachable from the VM. Forgetting this is the classic GC bug and it manifests as corruption far from the cause
-- [ ] 🔴 Tri-color marking with a gray worklist (`gray_stack: Vec<Gc<Obj>>`)
-- [ ] 🔴 `blacken_object`: trace children per object kind
-- [ ] 🔴 Sweep: walk the list, free unmarked, unmark survivors
-- [ ] 🔴 `next_gc = bytes_allocated * GROWTH_FACTOR` (2) after each collection
-- [ ] 🔴 String interning table entries as weak references — interned strings must be collectable
-- [ ] 🔴 **`gc-stress` feature: collect on every single allocation.** GC bugs are nondeterministic; stress mode makes them deterministic
-- [ ] 🔴 `gc-log` feature tracing allocate/mark/sweep with sizes
-- [ ] 🟡 GC stats exposed: collections, bytes freed, pause duration, live object count
-- [ ] 🔴 Test: unreachable object collected
-- [ ] 🔴 Test: reachable object survives 100 collections
-- [ ] 🔴 Test: cyclic structure collected when the cycle becomes unreachable
-- [ ] 🔴 Test: closure keeps its captured upvalue alive
-- [ ] 🔴 **Test: entire conformance suite passes under `gc-stress`** — this is the real GC test
-- [ ] 🟡 Test: heap size stays bounded in a long-running allocation loop
+- [x] 🔴 `ObjHeader { marked: bool, next: Option<Gc<Obj>>, kind: ObjKind }` — **no `kind: ObjKind` field**: kind-dispatch is done via a `Trace` trait plus type-erased `trace_fn`/`drop_fn` function pointers captured per-allocation in `allocate<T: Trace>`, not a hardcoded enum. `ember-gc` cannot know `ember-vm`'s concrete types (`ClosureObj`, `AdtValue`, etc.) without a circular crate dependency, so the enum-of-known-kinds design in the checklist's own pseudocode isn't buildable as literally stated; the function-pointer approach gives the same "one intrusive list, dispatch per-node" property without that dependency. `ObjHeader` does carry `marked`/`next`/`size` plus the two function pointers.
+- [x] 🔴 Intrusive linked list of all allocations — `GcHeap.objects: Option<NonNull<ObjHeader>>`, rebuilt in place during sweep.
+- [x] 🔴 `Gc<T>` handle (Copy) with deref — `Deref` only, deliberately no `DerefMut` (handles alias freely; a safe `&mut T` from an aliasing `Copy` pointer would be unsound). Also forwards `PartialEq`/`Eq`/`Hash`/`Debug`/`Display` to `T`, matching `Rc<T>`'s own semantics exactly so migrating `Value` off `Rc` needed no behavior changes at any call site.
+- [x] 🔴 `allocate<T>()` tracking `bytes_allocated`, triggering GC past `next_gc` — **the trigger check lives in `ember-vm`'s `Vm::step()`, not inside `allocate` itself.** `GcHeap::should_collect()` exposes the threshold/stress check; `allocate`/`intern_str` themselves never collect. This is deliberate, not an oversight: verified against the two real multi-allocation-per-instruction cases in the current opcode set (`OP_CLOSURE`'s upvalue-capture loop, `OP_MAKE_ADT`'s two back-to-back interned-name lookups) that collecting mid-instruction would free an object reachable only via a bare Rust local at that moment, invisible to `mark_roots` — a real bug, not a hypothetical one. Checking once per instruction boundary is sound by construction and still gives a maximally-adversarial stress test (see the `gc-stress` item below).
+- [x] 🔴 `mark_roots`: stack, call frames, open upvalues, globals — implemented as `Vm::maybe_collect`'s root-marking closure (`ember-gc` has no `Vm` type to hardcode a scan against, so `GcHeap::collect` takes the root-marking logic as a caller-supplied closure instead). Marks every `Value` on the stack, every frame's `closure`, every open upvalue, and both the **keys and values** of `globals` — the keys matter too: a global's interned name string is not otherwise rooted once it's off the constant pool's own `Rc` and onto the GC heap, and marking only values would have been exactly the kind of missed-root bug this phase exists to catch.
+- [x] 🔴 **`mark_compiler_roots`** — implemented as a documented no-op, not a ported function. clox needs this because its single-pass compiler interleaves bytecode emission with GC-heap allocation on the *same* heap the VM later runs on, so an in-progress function object can be swept mid-compile. `ember-compile` (Phase 8) is a fully separate, already-completed pass producing plain `Chunk`/`FunctionProto` data via compile-time `Symbol`s — it never touches `ember-gc` at all, and no `Vm`/`GcHeap` exists while it runs. There is no interleaved-allocation scenario in this architecture for this item to protect against.
+- [x] 🔴 Tri-color marking with a gray worklist (`gray_stack: Vec<Gc<Obj>>`) — `Tracer.gray_stack: &mut Vec<NonNull<ObjHeader>>`, type-erased rather than `Gc<Obj>` for the same reason as the `ObjHeader` deviation above. `Tracer::mark`'s check-before-push (skip if already marked) is what makes tracing a cycle terminate.
+- [x] 🔴 `blacken_object`: trace children per object kind — done via each type's own `Trace::trace` impl, invoked through the stored `trace_fn` pointer, rather than one central function matching on a kind enum. Verified against a real cyclic structure test (two heap objects each holding a handle to the other) that this correctly terminates and correctly frees the pair once unrooted — something `Rc` could never do at all.
+- [x] 🔴 Sweep: walk the list, free unmarked, unmark survivors — `GcHeap::collect`'s final phase; also prunes the string-intern table's entry for any freed interned string in the same pass, via a dedicated drop function distinct from the generic per-`T` one.
+- [x] 🔴 `next_gc = bytes_allocated * GROWTH_FACTOR` (2) after each collection — with an added floor (`+ INITIAL_NEXT_GC`) so `next_gc` can't collapse to 0 after a collection frees everything, which would otherwise make `should_collect()` true forever after regardless of the growth factor.
+- [x] 🔴 String interning table entries as weak references — interned strings must be collectable — `GcHeap.strings: FxHashMap<String, NonNull<GcBox<String>>>`, non-owning bare pointers, never scanned as roots. Tested directly: an interned string with nothing else referencing it is collected on the next `collect()`, and its table entry is pruned in the same sweep pass (not left dangling); re-interning the same content afterward allocates fresh rather than finding a stale entry.
+- [x] 🔴 **`gc-stress` feature: collect on every single allocation.** GC bugs are nondeterministic; stress mode makes them deterministic — implemented as collect-before-every-instruction (see the `allocate<T>()` item above for why per-allocation would have been unsound for this specific opcode set, and per-instruction is not). The entire cross-backend conformance suite passes with a collection forced before every single VM instruction — no root-tracking bug was found anywhere in the migration.
+- [x] 🔴 `gc-log` feature tracing allocate/mark/sweep with sizes — `eprintln!` calls behind `#[cfg(feature = "gc-log")]` in `allocate`/`intern_str`/`collect`.
+- [x] 🟡 GC stats exposed: collections, bytes freed, live object count — **no pause-duration tracking**: out of scope per the design doc's own Non-goals (no timing dependency taken elsewhere in the project to make wall-clock pause measurement meaningful).
+- [x] 🔴 Test: unreachable object collected
+- [x] 🔴 Test: reachable object survives 100 collections
+- [x] 🔴 Test: cyclic structure collected when the cycle becomes unreachable — the concrete proof this GC does something `Rc` fundamentally cannot: a real `a -> b -> a` cycle, `live_objects == 2`, collected down to `0` once nothing roots either side.
+- [x] 🔴 Test: closure keeps its captured upvalue alive — both via `ember-gc`'s own isolated test (an object reachable only through another object's `trace`, not directly rooted) and via `ember-vm`'s existing shared-capture/upvalue-survives-scope-exit tests, re-verified end-to-end after the migration.
+- [x] 🔴 **Test: entire conformance suite passes under `gc-stress`** — this is the real GC test — passes. Both backends (tree-walker and VM) agree on every fixture with a collection forced before every VM instruction.
+- [x] 🟡 Test: heap size stays bounded in a long-running allocation loop — 5000 iterations each discarding the previous interned string leaves `bytes_allocated()` at ~1.2 KB, not a figure anywhere near scaling with iteration count, confirming discarded allocations are genuinely reclaimed rather than retained.
+
+**Deviations from `ember-vm`'s `Value` shape as sketched in SPEC.md:** SPEC.md's pseudocode unifies every heap type into one `Value::Obj(Gc<Obj>)` variant with an internal `ObjKind` tag. `ember-vm`'s actual `Value` keeps the per-kind shape it already had before this phase (`Str`/`List`/`Closure`/`Adt`/`Record` as distinct variants), just with each `Rc<X>`/`Rc<RefCell<X>>` swapped for `Gc<X>` — a deliberate, minimal-diff migration of already-tested code, consistent with this project's established pattern of adapting SPEC.md's C-flavored pseudocode where Rust's own type system already gives the same property for free. `Value::Native` and `ClosureObj.proto` stay `Rc`, not `Gc` — natives are `'static` and hold no `Value`s; `FunctionProto` is immutable compile-time program data, never cyclic, never GC-owned.
 
 ---
 
