@@ -20,3 +20,7 @@ ember-bytecode = { path = "../ember-bytecode" }
 ember-compile = { path = "../ember-compile" }
 ember-vm = { path = "../ember-vm" }
 clap = { version = "4", features = ["derive"] }
+
+[features]
+gc-stress = ["ember-vm/gc-stress"]
+gc-log = ["ember-vm/gc-log"]

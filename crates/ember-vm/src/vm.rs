@@ -1,7 +1,8 @@
 use crate::error::RuntimeError;
-use crate::value::{ClosureObj, Value};
+use crate::value::{trace_value, ClosureObj, UpvalueCell, Value};
 use ember_bytecode::chunk::{Chunk, FunctionProto};
 use ember_bytecode::op::Op;
+use ember_gc::{Gc, GcHeap};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,7 +31,7 @@ const MAX_FRAMES: usize = 1000;
 const NATIVE_GLOBAL_COUNT: usize = 8;
 
 pub struct CallFrame {
-    pub closure: Rc<ClosureObj>,
+    pub closure: Gc<ClosureObj>,
     pub ip: usize,
     pub slot_base: usize,
 }
@@ -38,10 +39,15 @@ pub struct CallFrame {
 pub struct Vm {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
-    /// Keyed by the pooled constant-pool `Rc<String>` name, not a
-    /// `Symbol` — matches every other name-bearing opcode operand.
-    globals: FxHashMap<Rc<String>, Value>,
-    open_upvalues: Vec<Rc<RefCell<crate::value::Upvalue>>>,
+    /// Keyed by an interned `Gc<String>` name now, not `Rc<String>` — see
+    /// `read_global_name` (a later task). Note the *keys* are marked as
+    /// roots in `mark_roots` too, not just the values: a global's name
+    /// string must stay alive exactly as long as the global itself does,
+    /// and nothing else roots it once it's off the constant pool's own
+    /// `Rc` and onto the GC heap via interning.
+    globals: FxHashMap<Gc<String>, Value>,
+    open_upvalues: Vec<Gc<UpvalueCell>>,
+    gc: GcHeap,
 }
 
 #[derive(Debug)]
@@ -52,8 +58,9 @@ pub enum StepOutcome {
 
 impl Vm {
     pub fn new(script: FunctionProto) -> Self {
+        let mut gc = GcHeap::new();
         let proto = Rc::new(script);
-        let closure = Rc::new(ClosureObj {
+        let closure = gc.allocate(ClosureObj {
             proto,
             upvalues: Vec::new(),
         });
@@ -75,13 +82,15 @@ impl Vm {
         for &(name, arity, func) in crate::natives::NATIVES {
             let native = Value::Native(Rc::new(crate::value::NativeFn { name, arity, func }));
             stack.push(native.clone());
-            globals.insert(Rc::new(name.to_string()), native);
+            let key = gc.intern_str(name);
+            globals.insert(key, native);
         }
         Vm {
             stack,
             frames: vec![frame],
             globals,
             open_upvalues: Vec::new(),
+            gc,
         }
     }
 
@@ -93,6 +102,11 @@ impl Vm {
     #[cfg(test)]
     pub(crate) fn push_for_test(&mut self, v: Value) {
         self.push(v);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gc_mut_for_test(&mut self) -> &mut GcHeap {
+        &mut self.gc
     }
 
     fn frame(&self) -> &CallFrame {
@@ -130,6 +144,39 @@ impl Vm {
         &self.stack[len - 1 - distance_from_top]
     }
 
+    /// A collection is checked for once, here, at the very top of every
+    /// `step()` call — never inside `allocate`/`intern_str` themselves.
+    /// Checking only at instruction boundaries means every opcode
+    /// handler's whole body runs with the stack in a fully-rooted state
+    /// from start to finish, so no handler needs its own temporary-root
+    /// protection even when it does more than one allocation in a row
+    /// (OP_CLOSURE's upvalue-capture loop, OP_MAKE_ADT's two interned-name
+    /// lookups, both added in later tasks).
+    fn maybe_collect(&mut self) {
+        if !self.gc.should_collect() {
+            return;
+        }
+        let stack = &self.stack;
+        let frames = &self.frames;
+        let open_upvalues = &self.open_upvalues;
+        let globals = &self.globals;
+        self.gc.collect(|tracer| {
+            for v in stack {
+                trace_value(v, tracer);
+            }
+            for f in frames {
+                tracer.mark(f.closure);
+            }
+            for uv in open_upvalues {
+                tracer.mark(*uv);
+            }
+            for (k, v) in globals.iter() {
+                tracer.mark(*k);
+                trace_value(v, tracer);
+            }
+        });
+    }
+
     fn read_u8(&mut self) -> u8 {
         let ip = self.frame().ip;
         let byte = self.chunk().code[ip];
@@ -150,43 +197,46 @@ impl Vm {
 
     /// Reads a `u16` constant-pool index and converts the pooled
     /// `ember_bytecode::value::Value` into a runtime `Value`. `Str`
-    /// shares its `Rc<String>` directly (both `Value` types use the exact
-    /// same representation for strings) rather than re-allocating.
+    /// interns into the GC heap rather than sharing the pooled `Rc`
+    /// directly — the two `Value` types (compile-time constant pool vs.
+    /// runtime heap) are no longer the same representation for strings.
     fn read_constant(&mut self) -> Value {
         let idx = self.read_u16();
-        Self::const_to_value(&self.chunk().constants[idx as usize])
+        let pooled = self.chunk().constants[idx as usize].clone();
+        self.const_to_value(pooled)
     }
 
     /// Reads a `u16` constant-pool index and expects the pooled value to
-    /// be a `Str` — every global/field/type/variant name operand in the
-    /// whole `Op` set is pooled this way. Panics on a non-`Str` constant:
-    /// that would mean `ember-compile` emitted a name operand pointing at
-    /// the wrong kind of constant, a compiler bug this crate has no
-    /// responsibility to recover from.
-    fn read_global_name(&mut self) -> Rc<String> {
+    /// be a `Str`, interning it — every global/field/type/variant name
+    /// operand in the whole `Op` set is read this way. Panics on a
+    /// non-`Str` constant: that would mean `ember-compile` emitted a name
+    /// operand pointing at the wrong kind of constant, a compiler bug this
+    /// crate has no responsibility to recover from.
+    fn read_global_name(&mut self) -> Gc<String> {
         let idx = self.read_u16();
         self.str_constant(idx)
     }
 
-    /// Resolves a *known* constant-pool index to its pooled string —
-    /// unlike `read_global_name`, which reads the index off `ip` itself,
-    /// this is for opcodes (`MakeAdt`, `TestVariant`) that already have
-    /// the index in hand (e.g. `MakeAdt`'s second of three `u16`
-    /// operands) and just need it turned into a name.
-    fn str_constant(&self, idx: u16) -> Rc<String> {
-        match &self.chunk().constants[idx as usize] {
+    /// Resolves a *known* constant-pool index to its pooled string,
+    /// interned — unlike `read_global_name`, which reads the index off
+    /// `ip` itself, this is for opcodes (`MakeAdt`, `TestVariant`) that
+    /// already have the index in hand and just need it turned into a
+    /// name.
+    fn str_constant(&mut self, idx: u16) -> Gc<String> {
+        let s = match &self.chunk().constants[idx as usize] {
             ember_bytecode::value::Value::Str(s) => Rc::clone(s),
             other => panic!("name constant must be a string, found {other:?}"),
-        }
+        };
+        self.gc.intern_str(&s)
     }
 
-    fn const_to_value(c: &ember_bytecode::value::Value) -> Value {
+    fn const_to_value(&mut self, c: ember_bytecode::value::Value) -> Value {
         match c {
             ember_bytecode::value::Value::Nil => Value::Nil,
-            ember_bytecode::value::Value::Bool(b) => Value::Bool(*b),
-            ember_bytecode::value::Value::Int(n) => Value::Int(*n),
-            ember_bytecode::value::Value::Float(f) => Value::Float(*f),
-            ember_bytecode::value::Value::Str(s) => Value::Str(Rc::clone(s)),
+            ember_bytecode::value::Value::Bool(b) => Value::Bool(b),
+            ember_bytecode::value::Value::Int(n) => Value::Int(n),
+            ember_bytecode::value::Value::Float(f) => Value::Float(f),
+            ember_bytecode::value::Value::Str(s) => Value::Str(self.gc.intern_str(&s)),
         }
     }
 
@@ -233,6 +283,7 @@ impl Vm {
     }
 
     pub fn step(&mut self) -> Result<StepOutcome, RuntimeError> {
+        self.maybe_collect();
         let op = self.read_op();
         match op {
             Op::Constant => {
@@ -392,7 +443,8 @@ impl Vm {
                         let args: Vec<Value> = self.stack[args_start..].to_vec();
                         self.stack.truncate(args_start - 1); // removes the native callee + its args
                         let line = self.chunk().line_at(self.frame().ip.saturating_sub(1));
-                        let result = (n.func)(&args, line).map_err(|e| self.attach_trace(e))?;
+                        let result = (n.func)(&args, line, &mut self.gc)
+                            .map_err(|e| self.attach_trace(e))?;
                         self.push(result);
                     }
                     other => return Err(self.runtime_error(format!("cannot call {other:?}"))),
@@ -407,16 +459,17 @@ impl Vm {
                         let slot = self.frame().slot_base + desc.index as usize;
                         self.capture_upvalue(slot)
                     } else {
-                        Rc::clone(&self.frame().closure.upvalues[desc.index as usize])
+                        self.frame().closure.upvalues[desc.index as usize]
                     };
                     upvalues.push(uv);
                 }
-                self.push(Value::Closure(Rc::new(ClosureObj { proto, upvalues })));
+                let closure = self.gc.allocate(ClosureObj { proto, upvalues });
+                self.push(Value::Closure(closure));
             }
             Op::GetUpvalue => {
                 let idx = self.read_u8() as usize;
-                let uv = Rc::clone(&self.frame().closure.upvalues[idx]);
-                let v = match &*uv.borrow() {
+                let uv = self.frame().closure.upvalues[idx];
+                let v = match &*uv.0.borrow() {
                     crate::value::Upvalue::Open(slot) => self.stack[*slot].clone(),
                     crate::value::Upvalue::Closed(v) => v.clone(),
                 };
@@ -424,15 +477,15 @@ impl Vm {
             }
             Op::SetUpvalue => {
                 let idx = self.read_u8() as usize;
-                let uv = Rc::clone(&self.frame().closure.upvalues[idx]);
+                let uv = self.frame().closure.upvalues[idx];
                 let v = self.peek(0).clone();
-                let open_slot = match &*uv.borrow() {
+                let open_slot = match &*uv.0.borrow() {
                     crate::value::Upvalue::Open(slot) => Some(*slot),
                     crate::value::Upvalue::Closed(_) => None,
                 };
                 match open_slot {
                     Some(slot) => self.stack[slot] = v,
-                    None => *uv.borrow_mut() = crate::value::Upvalue::Closed(v),
+                    None => *uv.0.borrow_mut() = crate::value::Upvalue::Closed(v),
                 }
             }
             Op::CloseUpvalue => {
@@ -452,7 +505,8 @@ impl Vm {
                     items.push(self.pop());
                 }
                 items.reverse(); // popped in reverse of push order
-                self.push(Value::List(Rc::new(RefCell::new(items))));
+                let list = self.gc.allocate(crate::value::ListObj(RefCell::new(items)));
+                self.push(Value::List(list));
             }
             Op::GetIndex => {
                 let index = self.pop();
@@ -472,7 +526,7 @@ impl Vm {
                 let base = self.pop();
                 match base {
                     Value::Record { fields, .. } => {
-                        let v = fields.borrow().get(&name).cloned();
+                        let v = fields.0.borrow().get(&name).cloned();
                         match v {
                             Some(v) => self.push(v),
                             None => return Err(self.runtime_error(format!("no field `{name}`"))),
@@ -490,7 +544,7 @@ impl Vm {
                 let base = self.pop();
                 match base {
                     Value::Record { fields, .. } => {
-                        fields.borrow_mut().insert(name, value.clone());
+                        fields.0.borrow_mut().insert(name, value.clone());
                         self.push(value);
                     }
                     other => {
@@ -514,10 +568,13 @@ impl Vm {
                     pairs.push((name, value));
                 }
                 pairs.reverse();
-                let fields: FxHashMap<Rc<String>, Value> = pairs.into_iter().collect();
+                let fields: FxHashMap<Gc<String>, Value> = pairs.into_iter().collect();
+                let fields = self
+                    .gc
+                    .allocate(crate::value::RecordFields(RefCell::new(fields)));
                 self.push(Value::Record {
                     name: type_name,
-                    fields: Rc::new(RefCell::new(fields)),
+                    fields,
                 });
             }
             Op::MakeAdt => {
@@ -530,12 +587,13 @@ impl Vm {
                 for _ in 0..arity {
                     fields.push(self.pop());
                 }
-                fields.reverse(); // positional order matters — see this task's own note
-                self.push(Value::Adt(Rc::new(crate::value::AdtValue {
+                fields.reverse(); // positional order matters
+                let adt = self.gc.allocate(crate::value::AdtValue {
                     type_name,
                     variant,
                     fields,
-                })));
+                });
+                self.push(Value::Adt(adt));
             }
             Op::TestVariant => {
                 let idx = self.read_u16();
@@ -591,14 +649,14 @@ impl Vm {
     fn close_upvalues(&mut self, from: usize) {
         let mut keep = Vec::with_capacity(self.open_upvalues.len());
         for uv in self.open_upvalues.drain(..) {
-            let open_slot = match &*uv.borrow() {
+            let open_slot = match &*uv.0.borrow() {
                 crate::value::Upvalue::Open(s) => Some(*s),
                 crate::value::Upvalue::Closed(_) => None,
             };
             match open_slot {
                 Some(s) if s >= from => {
                     let value = self.stack[s].clone();
-                    *uv.borrow_mut() = crate::value::Upvalue::Closed(value);
+                    *uv.0.borrow_mut() = crate::value::Upvalue::Closed(value);
                 }
                 Some(_) => keep.push(uv),
                 None => {}
@@ -611,23 +669,25 @@ impl Vm {
     /// it — the mechanism that makes shared capture work: two closures
     /// over the same variable end up holding `Rc::clone`s of the identical
     /// `RefCell`, so a write through one is visible through the other.
-    fn capture_upvalue(&mut self, slot: usize) -> Rc<RefCell<crate::value::Upvalue>> {
+    fn capture_upvalue(&mut self, slot: usize) -> Gc<crate::value::UpvalueCell> {
         for uv in &self.open_upvalues {
-            if let crate::value::Upvalue::Open(s) = &*uv.borrow() {
+            if let crate::value::Upvalue::Open(s) = &*uv.0.borrow() {
                 if *s == slot {
-                    return Rc::clone(uv);
+                    return *uv;
                 }
             }
         }
-        let uv = Rc::new(RefCell::new(crate::value::Upvalue::Open(slot)));
-        self.open_upvalues.push(Rc::clone(&uv));
+        let uv = self.gc.allocate(crate::value::UpvalueCell(RefCell::new(
+            crate::value::Upvalue::Open(slot),
+        )));
+        self.open_upvalues.push(uv);
         uv
     }
 
     fn index_get(&self, base: Value, index: Value) -> Result<Value, RuntimeError> {
         match (&base, &index) {
             (Value::List(l), Value::Int(i)) => {
-                let l = l.borrow();
+                let l = l.0.borrow();
                 if *i < 0 || *i as usize >= l.len() {
                     return Err(self.runtime_error(format!(
                         "index {i} out of bounds for list of length {}",
@@ -643,7 +703,7 @@ impl Vm {
     fn index_set(&self, base: Value, index: Value, value: Value) -> Result<(), RuntimeError> {
         match (&base, &index) {
             (Value::List(l), Value::Int(i)) => {
-                let mut l = l.borrow_mut();
+                let mut l = l.0.borrow_mut();
                 if *i < 0 || *i as usize >= l.len() {
                     return Err(self.runtime_error(format!(
                         "index {i} out of bounds for list of length {}",
@@ -657,7 +717,7 @@ impl Vm {
         }
     }
 
-    fn binary_arith(&self, op: Op, l: Value, r: Value) -> Result<Value, RuntimeError> {
+    fn binary_arith(&mut self, op: Op, l: Value, r: Value) -> Result<Value, RuntimeError> {
         let overflow = |op_name: &str, a: i64, b: i64| {
             self.runtime_error(format!("integer overflow: {a} {op_name} {b}"))
         };
@@ -694,7 +754,9 @@ impl Vm {
             (Op::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             (Op::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
             (Op::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-            (Op::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(Rc::new(format!("{a}{b}")))),
+            (Op::Add, Value::Str(a), Value::Str(b)) => {
+                Ok(Value::Str(self.gc.intern_str(&format!("{a}{b}"))))
+            }
             (op, l, r) => {
                 Err(self.runtime_error(format!("invalid operands for {op:?}: {l:?}, {r:?}")))
             }
@@ -1066,10 +1128,6 @@ mod tests {
     fn calling_a_closure_pushes_a_frame_and_the_result_replaces_the_whole_call() {
         let mut interner = Interner::new();
         let callee = Rc::new(callee_proto(&mut interner));
-        let closure = Value::Closure(Rc::new(ClosureObj {
-            proto: callee,
-            upvalues: vec![],
-        }));
 
         let proto = script(|c| {
             let five = c.add_constant(ember_bytecode::value::Value::Int(5));
@@ -1080,6 +1138,10 @@ mod tests {
             c.write_op(Op::Return, 1);
         });
         let mut vm = Vm::new(proto);
+        let closure = Value::Closure(vm.gc_mut_for_test().allocate(ClosureObj {
+            proto: callee,
+            upvalues: vec![],
+        }));
         // Test-only: seed the stack with the callee BEFORE execution starts,
         // exactly where the script's own bytecode expects to find it (this
         // sidesteps needing OP_CLOSURE, built in a future task, just to
@@ -1103,15 +1165,15 @@ mod tests {
     fn calling_with_the_wrong_arity_is_a_runtime_error() {
         let mut interner = Interner::new();
         let callee = Rc::new(callee_proto(&mut interner)); // expects 1 arg
-        let closure = Value::Closure(Rc::new(ClosureObj {
-            proto: callee,
-            upvalues: vec![],
-        }));
         let proto = script(|c| {
             c.write_op(Op::Call, 1);
             c.write_u8(0, 1); // called with 0 args instead of 1
         });
         let mut vm = Vm::new(proto);
+        let closure = Value::Closure(vm.gc_mut_for_test().allocate(ClosureObj {
+            proto: callee,
+            upvalues: vec![],
+        }));
         vm.push_for_test(closure);
         assert!(vm.run().is_err());
     }
@@ -1130,7 +1192,11 @@ mod tests {
 
     #[test]
     fn calling_a_native_dispatches_immediately_with_no_extra_frame() {
-        fn double(args: &[Value], _line: u32) -> Result<Value, RuntimeError> {
+        fn double(
+            args: &[Value],
+            _line: u32,
+            _gc: &mut ember_gc::GcHeap,
+        ) -> Result<Value, RuntimeError> {
             match args[0] {
                 Value::Int(n) => Ok(Value::Int(n * 2)),
                 _ => unreachable!(),
@@ -1292,13 +1358,6 @@ mod tests {
         // seeds a `Value::Record` straight onto the stack, to exercise
         // `OP_GET_FIELD`/`OP_SET_FIELD` (this task's actual scope) in
         // isolation from record construction.
-        let mut fields = FxHashMap::default();
-        fields.insert(Rc::new("x".to_string()), Value::Int(1));
-        let record = Value::Record {
-            name: Rc::new("P".to_string()),
-            fields: Rc::new(RefCell::new(fields)),
-        };
-
         let proto = script(|c| {
             let x_name =
                 c.add_constant(ember_bytecode::value::Value::Str(Rc::new("x".to_string())));
@@ -1322,6 +1381,13 @@ mod tests {
         });
 
         let mut vm = Vm::new(proto);
+        let gc = vm.gc_mut_for_test();
+        let mut fields = FxHashMap::default();
+        fields.insert(gc.intern_str("x"), Value::Int(1));
+        let record = Value::Record {
+            name: gc.intern_str("P"),
+            fields: gc.allocate(crate::value::RecordFields(RefCell::new(fields))),
+        };
         // Slot 8, not 0: `Vm::new` reserves physical slots 0-7 for
         // `NATIVE_GLOBAL_COUNT` placeholders (see that constant's doc
         // comment), so the record seeded right after them lands at slot 8,
@@ -1459,5 +1525,32 @@ mod tests {
         ";
         let result = compile_and_run(src).unwrap();
         assert!(matches!(result, Value::Int(2)));
+    }
+
+    #[test]
+    fn heap_size_stays_bounded_in_a_long_running_allocation_loop() {
+        let src = "
+            let mut i = 0;
+            let mut last = \"\";
+            while i < 5000 {
+                last = str(i);
+                i = i + 1;
+            }
+            last;
+        ";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "parse diags: {parse_diags:?}");
+        let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+        assert!(resolve_diags.is_empty(), "resolve diags: {resolve_diags:?}");
+        let proto = ember_compile::compile(&ast, &mut interner, &bindings, &stmts);
+        let mut vm = Vm::new(proto);
+        let result = vm.run().expect("should not error");
+        assert!(matches!(result, Value::Str(s) if *s == "4999"));
+        assert!(
+            vm.gc_mut_for_test().bytes_allocated() < 200_000,
+            "5000 iterations each discarding the previous `last` must not retain all 5000 \
+             strings — got {} bytes allocated, collection is not reclaiming discarded ones",
+            vm.gc_mut_for_test().bytes_allocated()
+        );
     }
 }

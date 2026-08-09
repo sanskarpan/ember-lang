@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rustc-hash = "2"
+
+[features]
+gc-stress = []
+gc-log = []

@@ -229,6 +229,9 @@ version = "0.1.0"
 [[package]]
 name = "ember-gc"
 version = "0.1.0"
+dependencies = [
+ "rustc-hash",
+]
 
 [[package]]
 name = "ember-lexer"
@@ -303,6 +306,7 @@ dependencies = [
  "ember-bytecode",
  "ember-compile",
  "ember-diag",
+ "ember-gc",
  "ember-parser",
  "ember-resolve",
  "ember-span",
