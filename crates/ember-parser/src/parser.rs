@@ -1102,7 +1102,7 @@ fn parse_int_literal(text: &str) -> i64 {
 /// malformed the input — a later task adds synchronize()-based recovery
 /// that makes this true even when a statement in the middle fails to parse.
 pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
-    let (tokens, lex_diags) = ember_lexer::lex(src);
+    let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
     let mut p = Parser::new(src, tokens);
     p.diagnostics.extend(lex_diags);
     let mut stmts = Vec::new();
@@ -1126,7 +1126,7 @@ pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
 /// crate.
 #[cfg(test)]
 pub(crate) fn parse_expr_from_str(src: &str) -> (Ast, Interner, Idx<Expr>, Vec<Diagnostic>) {
-    let (tokens, lex_diags) = ember_lexer::lex(src);
+    let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
     let mut p = Parser::new(src, tokens);
     p.diagnostics.extend(lex_diags);
     let e = p.expr(Prec::None);
@@ -1138,7 +1138,7 @@ pub(crate) fn parse_expr_from_str(src: &str) -> (Ast, Interner, Idx<Expr>, Vec<D
 /// only exercised by this module's own tests today.
 #[cfg(test)]
 pub(crate) fn parse_stmt_from_str(src: &str) -> (Ast, Interner, Idx<Stmt>, Vec<Diagnostic>) {
-    let (tokens, lex_diags) = ember_lexer::lex(src);
+    let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
     let mut p = Parser::new(src, tokens);
     p.diagnostics.extend(lex_diags);
     let s = p.stmt();
