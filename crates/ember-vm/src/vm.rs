@@ -1493,6 +1493,185 @@ mod tests {
         assert!(matches!(result, Value::Float(f) if (f - 16.0).abs() < 1e-9));
     }
 
+    // Naming convention throughout this task's tests (already established
+    // elsewhere in this file — see the existing
+    // `nullary_adt_variant_constructs_via_match`/`struct_literal_construction_and_field_read`
+    // tests): `compile_and_run`'s own `assert!(resolve_diags.is_empty())` is
+    // strict, catching warnings too, and this resolver never marks a type
+    // name "used" from ANY reference, or a constructor "used" from PATTERN
+    // position specifically (only from being actually constructed as an
+    // expression) — so every variant that's only ever pattern-matched in a
+    // given test, and every type name, needs a `_` prefix to avoid an
+    // "unused" warning tripping that assertion. Each test below has already
+    // been checked against which constructors it actually CONSTRUCTS (via a
+    // real call like `f(Circle(5))`) vs. only pattern-matches.
+
+    #[test]
+    fn or_pattern_repeated_name_matches_correctly_via_the_first_alternative() {
+        // The original reported reproduction: `Circle(r) | Square(r) => r`,
+        // matched via Circle. Before the fix, this panicked with an
+        // out-of-bounds VM stack read (Circle's bind wrote into a slot the
+        // arm body never read, since the resolver's `lookup` returned
+        // whichever alternative's `declare` ran LAST in source order).
+        // `Square` is only ever pattern-matched here (never constructed), so
+        // it needs the `_` prefix; `Circle` is genuinely constructed below.
+        let src = "
+            type _Shape = Circle(Int) | _Square(Int);
+            fn area(s) {
+                match s {
+                    Circle(r) | _Square(r) => r,
+                }
+            }
+            area(Circle(5));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(5)));
+    }
+
+    #[test]
+    fn or_pattern_repeated_name_matches_correctly_via_the_second_alternative() {
+        // Same pattern, matched via the OTHER alternative — must independently
+        // confirm both branches write into the slot the arm body actually
+        // reads. `Circle` is only ever pattern-matched here (never
+        // constructed), so IT needs the `_` prefix this time — the reverse of
+        // the previous test.
+        let src = "
+            type _Shape = _Circle(Int) | Square(Int);
+            fn area(s) {
+                match s {
+                    _Circle(r) | Square(r) => r,
+                }
+            }
+            area(Square(7));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(7)));
+    }
+
+    #[test]
+    fn or_pattern_with_a_nested_binding_at_different_depths_per_alternative() {
+        // `r` sits at a different structural nesting depth in each
+        // alternative (direct child of Circle, nested one level inside
+        // Square's own Pair payload) — proves the fix is name-keyed, not
+        // positional, since a "reset local_count per alternative" fix
+        // (simpler, but insufficient) would put these two `r`s in different
+        // slots. `Circle` is only pattern-matched (never constructed); `Pair`
+        // and `Square` both ARE constructed below.
+        let src = "
+            type _Pair = Pair(Int, Int);
+            type _Shape = _Circle(Int) | Square(_Pair);
+            fn f(s) {
+                match s {
+                    _Circle(r) | Square(Pair(_, r)) => r,
+                }
+            }
+            f(Square(Pair(1, 9)));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(9)));
+    }
+
+    #[test]
+    fn or_pattern_with_no_repeated_name_still_compiles_and_runs_correctly() {
+        // The broader (non-repeated-name) half of the original bug:
+        // `local_count` drifted once per alternative that bound ANY name, not
+        // just once per repeated occurrence — this exercises TWO distinct
+        // reserved slots (`_r`, `_s`) rather than one shared one.
+        //
+        // The body deliberately does NOT read either bound name: this
+        // language doesn't check that every alternative of an `Or`-pattern
+        // binds the same names (a documented, deferred usability nicety, not
+        // a soundness issue — see `declare_pattern_bindings`'s own comment in
+        // `ember-resolve`), so whichever name the NON-matching alternative
+        // would have bound holds a meaningless placeholder value on any given
+        // run — reading it wouldn't test anything well-defined. Both `_r` and
+        // `_s` are underscore-prefixed since they're genuinely unused by
+        // design here (and `_s`, not `s`, specifically to avoid shadowing the
+        // outer parameter `s` with a same-named, differently-meant binding).
+        // Instead, this test proves the SLOT ACCOUNTING itself is correct by
+        // checking that a local declared AFTER the match (`extra`) still
+        // reads back correctly — the real proof that no slot leaked into
+        // subsequent code. `Square` is only pattern-matched here, so it needs
+        // the `_` prefix; `Circle` is constructed below.
+        let src = "
+            type _Shape = Circle(Int) | _Square(Int);
+            fn f(s) {
+                let extra = 42;
+                match s {
+                    Circle(_r) | _Square(_s) => 1,
+                };
+                extra
+            }
+            f(Circle(3));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(42)));
+    }
+
+    #[test]
+    fn an_or_pattern_arm_that_does_not_match_leaves_the_stack_correct_for_the_next_arm() {
+        // Proves Task 2's leaked-reservation fix: this Or-pattern's
+        // alternatives never match `Triangle`, so control must fall through
+        // to the wildcard arm with a clean stack. Before the fix, the
+        // reserved (never-bound) slot for `r` was never popped on this path,
+        // corrupting the function's return value. `Circle`/`Square` are only
+        // ever pattern-matched (never constructed); `Triangle` is constructed
+        // below.
+        let src = "
+            type _Shape = _Circle(Int) | _Square(Int) | Triangle(Int);
+            fn f(s) {
+                match s {
+                    _Circle(r) | _Square(r) => r,
+                    _ => -1,
+                }
+            }
+            f(Triangle(9));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(-1)));
+    }
+
+    #[test]
+    fn a_guards_failure_after_a_non_or_bind_falls_through_with_a_clean_stack() {
+        // Proves Task 3's fix: the ORIGINAL reproduction found while
+        // investigating Task 2 — `r` is really bound (Circle matched), but
+        // the guard is false, so control must fall through to the wildcard
+        // arm with `r` popped, not leaked. `Circle` is constructed below, no
+        // prefix needed.
+        let src = "
+            type _Shape = Circle(Int);
+            fn f(s) {
+                match s {
+                    Circle(r) if r > 100 => r,
+                    _ => -1,
+                }
+            }
+            f(Circle(5));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(-1)));
+    }
+
+    #[test]
+    fn a_guards_failure_after_an_or_pattern_bind_falls_through_with_a_clean_stack() {
+        // The combined case: Task 2's reserved-slot bind AND Task 3's
+        // guard-failure cleanup must compose correctly. `Square` is only
+        // ever pattern-matched here (never constructed), so it needs the `_`
+        // prefix; `Circle` is constructed below.
+        let src = "
+            type _Shape = Circle(Int) | _Square(Int);
+            fn f(s) {
+                match s {
+                    Circle(r) | _Square(r) if r > 100 => r,
+                    _ => -1,
+                }
+            }
+            f(Circle(5));
+        ";
+        let result = compile_and_run(src).unwrap();
+        assert!(matches!(result, Value::Int(-1)));
+    }
+
     #[test]
     fn record_pattern_tests_by_name() {
         // `_P`, not `P` — see `struct_literal_construction_and_field_read`
