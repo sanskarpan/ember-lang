@@ -19,6 +19,7 @@ ember-tree = { path = "../ember-tree" }
 ember-bytecode = { path = "../ember-bytecode" }
 ember-compile = { path = "../ember-compile" }
 ember-vm = { path = "../ember-vm" }
+ember-fmt = { path = "../ember-fmt" }
 clap = { version = "4", features = ["derive"] }
 
 [features]
