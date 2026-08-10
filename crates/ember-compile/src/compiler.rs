@@ -4,6 +4,7 @@ use ember_bytecode::op::Op;
 use ember_bytecode::value::Value;
 use ember_lexer::TokenKind;
 use ember_resolve::{Bindings, FunctionId, Resolution};
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 /// Fixed, unconditional runtime stack effect for ops whose effect doesn't
@@ -1245,6 +1246,54 @@ impl<'a> Compiler<'a> {
         self.current().patch_jump(to_end);
     }
 
+    /// Collects every name a pattern would bind, in traversal order, WITH
+    /// duplicates — mirrors `ember-resolve`'s own `collect_pattern_bind_names`
+    /// exactly (both crates need the identical distinct-name set for the
+    /// same `Or`-pattern, computed the same way, to stay in lockstep). Not
+    /// shared as a crate dependency between the two — `ember-compile` reads
+    /// `Pattern` directly off its own `&Ast`, same as `ember-resolve` does off
+    /// its own, and duplicating this ~20-line traversal is simpler than
+    /// inventing a shared abstraction for one function.
+    fn collect_pattern_bind_names(&self, pat: Idx<ember_ast::Pattern>, out: &mut Vec<Symbol>) {
+        match self.ast.pat(pat) {
+            Pattern::Wild
+            | Pattern::Int(_)
+            | Pattern::Float(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Error => {}
+            Pattern::Bind(sym) => out.push(*sym),
+            Pattern::Ctor { args, .. } => {
+                for a in args {
+                    self.collect_pattern_bind_names(*a, out);
+                }
+            }
+            Pattern::Tuple(items) => {
+                for i in items {
+                    self.collect_pattern_bind_names(*i, out);
+                }
+            }
+            Pattern::List { items, rest } => {
+                for i in items {
+                    self.collect_pattern_bind_names(*i, out);
+                }
+                if let Some(r) = rest {
+                    self.collect_pattern_bind_names(*r, out);
+                }
+            }
+            Pattern::Record { fields, .. } => {
+                for (_, p) in fields {
+                    self.collect_pattern_bind_names(*p, out);
+                }
+            }
+            Pattern::Or(alts) => {
+                for a in alts {
+                    self.collect_pattern_bind_names(*a, out);
+                }
+            }
+        }
+    }
+
     /// One "extract a sub-value and bind (or recurse into) its pattern"
     /// step, shared by `Ctor`/`Record`/`List` binding below.
     fn compile_destructured_bind(
@@ -1281,6 +1330,139 @@ impl<'a> Compiler<'a> {
                 self.push_local(None);
                 let temp_slot = self.current().local_count - 1;
                 self.compile_pattern_bind(sub_pat, temp_slot, line);
+            }
+        }
+    }
+
+    /// Like `compile_destructured_bind`, but used only from
+    /// `compile_pattern_bind_into_reserved` (see that function's doc
+    /// comment). Any intermediate temp needed to hold a nested sub-pattern's
+    /// own destructured value (e.g. unpacking `Pair` before reaching a bind
+    /// two levels deep) is self-cleaning: pushed, used, then popped again
+    /// before returning — unlike `compile_destructured_bind`'s temps, which
+    /// are deliberately left for the enclosing scope-exit to sweep up, these
+    /// must not persist, since they don't correspond to any slot the
+    /// resolver counted (only the FINAL bound names do, via `reserved`).
+    fn compile_destructured_bind_into_reserved(
+        &mut self,
+        sub_pat: Idx<ember_ast::Pattern>,
+        scrutinee_slot: u32,
+        source: DestructureSource,
+        reserved: &FxHashMap<Symbol, u32>,
+        line: u32,
+    ) {
+        if matches!(self.ast.pat(sub_pat), Pattern::Wild | Pattern::Error) {
+            return;
+        }
+        self.emit_get_local(scrutinee_slot, line);
+        match source {
+            DestructureSource::Positional(i) => {
+                self.current().chunk.write_op(Op::Destructure, line);
+                self.current().chunk.write_u8(i, line);
+                self.current().adjust_depth(0);
+            }
+            DestructureSource::Named(sym) => {
+                let c = self.name_constant(sym);
+                self.current().emit_op(Op::GetField, line);
+                self.current().chunk.write_u16(c, line);
+            }
+            DestructureSource::Indexed(i) => {
+                let c = self.current().chunk.add_constant(Value::Int(i));
+                self.emit_constant(c, line);
+                self.current().emit_op(Op::GetIndex, line);
+            }
+        }
+        match self.ast.pat(sub_pat).clone() {
+            Pattern::Bind(sym) => {
+                let slot = reserved[&sym];
+                self.emit_set_local(slot, line);
+                self.current().emit_op(Op::Pop, line);
+            }
+            _ => {
+                self.push_local(None);
+                let temp_slot = self.current().local_count - 1;
+                self.compile_pattern_bind_into_reserved(sub_pat, temp_slot, reserved, line);
+                self.emit_scope_pops(1, line);
+            }
+        }
+    }
+
+    /// Like `compile_pattern_bind`, but used only while compiling one
+    /// alternative of an `Or` pattern (see `compile_pattern_match`): every
+    /// name this alternative's pattern binds must write into a slot some
+    /// OTHER, unconditionally-run code has already reserved, because only
+    /// one alternative's bind ever actually executes at runtime — a plain
+    /// push-and-declare here would leave the slot's physical stack position
+    /// undefined whenever a DIFFERENT alternative is the one that matched.
+    /// `reserved` maps every name any alternative of this same `Or` binds to
+    /// its one shared physical slot.
+    fn compile_pattern_bind_into_reserved(
+        &mut self,
+        pat: Idx<ember_ast::Pattern>,
+        scrutinee_slot: u32,
+        reserved: &FxHashMap<Symbol, u32>,
+        line: u32,
+    ) {
+        match self.ast.pat(pat).clone() {
+            Pattern::Wild
+            | Pattern::Error
+            | Pattern::Int(_)
+            | Pattern::Float(_)
+            | Pattern::Bool(_)
+            | Pattern::Str(_)
+            | Pattern::Tuple(_) => {}
+            Pattern::Bind(sym) => {
+                let slot = reserved[&sym];
+                self.emit_get_local(scrutinee_slot, line);
+                self.emit_set_local(slot, line);
+                self.current().emit_op(Op::Pop, line);
+            }
+            Pattern::Ctor { args, .. } => {
+                for (i, &arg_pat) in args.iter().enumerate() {
+                    self.compile_destructured_bind_into_reserved(
+                        arg_pat,
+                        scrutinee_slot,
+                        DestructureSource::Positional(i as u8),
+                        reserved,
+                        line,
+                    );
+                }
+            }
+            Pattern::Record { fields, .. } => {
+                for (fname, fpat) in fields {
+                    self.compile_destructured_bind_into_reserved(
+                        fpat,
+                        scrutinee_slot,
+                        DestructureSource::Named(fname),
+                        reserved,
+                        line,
+                    );
+                }
+            }
+            Pattern::List { items, rest } => {
+                for (i, &item_pat) in items.iter().enumerate() {
+                    self.compile_destructured_bind_into_reserved(
+                        item_pat,
+                        scrutinee_slot,
+                        DestructureSource::Indexed(i as i64),
+                        reserved,
+                        line,
+                    );
+                }
+                if let Some(rest_pat) = rest {
+                    if let Pattern::Bind(sym) = self.ast.pat(rest_pat) {
+                        let sym = *sym;
+                        let slot = reserved[&sym];
+                        // Known gap (matches compile_pattern_bind's own): a
+                        // Nil placeholder, not the real remaining sublist.
+                        self.current().emit_op(Op::Nil, line);
+                        self.emit_set_local(slot, line);
+                        self.current().emit_op(Op::Pop, line);
+                    }
+                }
+            }
+            Pattern::Or(_) => {
+                unreachable!("nested Or inside an Or alternative is not produced by this grammar")
             }
         }
     }
@@ -1380,12 +1562,47 @@ impl<'a> Compiler<'a> {
     ) {
         if let Pattern::Or(alts) = self.ast.pat(pat).clone() {
             let mut end_jumps = Vec::new();
+
+            // Every alternative could bind the same name (that's the
+            // whole point of `Circle(r) | Square(r) => r`) — but only
+            // one alternative's bind ever executes at runtime, since
+            // they're mutually exclusive branches reached only via the
+            // previous alternative's failed-test jump. Reserving each
+            // distinct bound name's slot UNCONDITIONALLY here, before any
+            // alternative's test runs, guarantees the slot physically
+            // exists on the stack regardless of which alternative later
+            // matches — a plain push-and-declare inside one alternative's
+            // own (conditionally executed) branch would leave the slot's
+            // physical position undefined whenever a DIFFERENT
+            // alternative is the one that actually matched. Every
+            // alternative then writes into these reserved slots via
+            // `compile_pattern_bind_into_reserved` instead of the normal
+            // `compile_pattern_bind`.
+            let mut names = Vec::new();
+            for &alt in &alts {
+                self.collect_pattern_bind_names(alt, &mut names);
+            }
+            let mut reserved: FxHashMap<Symbol, u32> = FxHashMap::default();
+            for name in names {
+                if let std::collections::hash_map::Entry::Vacant(e) = reserved.entry(name) {
+                    self.current().emit_op(Op::Nil, line);
+                    self.declare_named_local(name, line);
+                    let slot = self.current().local_count - 1;
+                    e.insert(slot);
+                }
+            }
+
+            // Captured AFTER pre-reservation, not before: the
+            // reservation's Nil-pushes are real, unconditional stack
+            // growth that every alternative's test is reached "on top
+            // of" — resetting to a depth from BEFORE reservation would
+            // undercount by one per distinct reserved name.
             let alts_entry_depth = self.current().stack_depth;
             for &alt in &alts {
                 self.current().stack_depth = alts_entry_depth;
                 self.compile_pattern_test(alt, scrutinee_slot, line);
                 let this_fails = self.current().emit_jump(Op::JumpIfFalse, line);
-                self.compile_pattern_bind(alt, scrutinee_slot, line);
+                self.compile_pattern_bind_into_reserved(alt, scrutinee_slot, &reserved, line);
                 end_jumps.push(self.current().emit_jump(Op::Jump, line));
                 self.current().patch_jump(this_fails);
                 // falls through to the next alternative's test (or, after
@@ -1394,6 +1611,19 @@ impl<'a> Compiler<'a> {
                 // depth every alternative's test starts from.
             }
             self.current().stack_depth = alts_entry_depth;
+            // Every alternative's test failed. The `reserved.len()` slots
+            // reserved above were pushed unconditionally before any test
+            // ran — nothing bound them (no alternative matched), and
+            // nothing else on this path will ever pop them (the
+            // success-path body/scope-exit code below is never reached
+            // via this jump), so they must be cleaned up explicitly here.
+            // Raw `Op::Pop`, not `emit_scope_pops`: this must NOT touch
+            // `local_count`/`declared_slots`, which the success-path body
+            // compiled immediately after this function returns still
+            // needs to correctly describe.
+            for _ in 0..reserved.len() {
+                self.current().emit_op(Op::Pop, line);
+            }
             fail_jumps.push(self.current().emit_jump(Op::Jump, line));
             for j in end_jumps {
                 self.current().patch_jump(j);
@@ -1443,14 +1673,42 @@ impl<'a> Compiler<'a> {
             let mut fail_jumps = Vec::new();
             self.compile_pattern_match(arm.pat, scrutinee_slot, &mut fail_jumps, line);
 
-            if let Some(guard) = arm.guard {
+            // `bound_count` is captured HERE, not after
+            // `emit_tail_scope_exit` runs below — that call
+            // unconditionally resets `local_count` back down to
+            // `arm_entry_local_count` as part of the compiler's own
+            // linear code generation (regardless of which runtime path
+            // is actually taken), so this is the only point where
+            // `local_count` still reflects how many locals this arm's
+            // pattern really bound.
+            let guard_fail = arm.guard.map(|guard| {
                 self.compile_expr(guard);
-                fail_jumps.push(self.current().emit_jump(Op::JumpIfFalse, line));
-            }
+                let bound_count = self.current().local_count - arm_entry_local_count;
+                let jump = self.current().emit_jump(Op::JumpIfFalse, line);
+                (jump, bound_count)
+            });
 
             self.compile_expr(arm.body);
             self.emit_tail_scope_exit(arm_entry_local_count, line);
             end_jumps.push(self.current().emit_jump(Op::Jump, line));
+
+            if let Some((guard_fail_jump, bound_count)) = guard_fail {
+                self.current().patch_jump(guard_fail_jump);
+                // The pattern DID match (bound_count locals were really
+                // pushed by its bind) but the guard failed — nothing else
+                // on this path will ever pop them, since we're not taking
+                // the body/scope-exit route just above (that code is only
+                // reached by falling through from a successful guard, not
+                // by jumping here). Raw Op::Pop, not `emit_scope_pops`,
+                // for the same reason as `compile_pattern_match`'s own
+                // matching fix in Task 2: must not touch `local_count`/
+                // `declared_slots`, which the body code just above still
+                // needs to have correctly described.
+                for _ in 0..bound_count {
+                    self.current().emit_op(Op::Pop, line);
+                }
+                fail_jumps.push(self.current().emit_jump(Op::Jump, line));
+            }
 
             prev_fail_jumps = fail_jumps;
         }
@@ -2267,6 +2525,70 @@ mod tests {
     }
 
     #[test]
+    fn an_or_pattern_binding_the_same_name_writes_both_alternatives_into_the_same_slot() {
+        // Complements the existing
+        // `an_or_pattern_binding_the_same_name_in_every_alternative_does_not_corrupt_stack_bookkeeping`
+        // test (which only proves compilation doesn't panic) by asserting the
+        // emitted bytecode is actually consistent: whichever alternative's
+        // bind runs, it must write `r` into the SAME physical slot, since the
+        // arm body has only one `GetLocal` for `r` and it can't know at
+        // compile time which alternative will have matched.
+        //
+        // Uses `compile_program_chunk` + `disassemble_recursively` (not
+        // `compile_program_str`, which only disassembles the top-level chunk
+        // and would show nothing for code inside `fn _f`'s own nested chunk —
+        // see `disassemble_recursively`'s own doc comment for why).
+        let src = "type Shape = Circle(Int) | Square(Int); fn _f(s) { match s { Circle(r) | Square(r) => r, _ => 0, } }";
+        let (chunk, interner) = compile_program_chunk(src);
+        let out = disassemble_recursively(&chunk, "test", &interner);
+        let set_local_lines: Vec<&str> =
+            out.lines().filter(|l| l.contains("OP_SET_LOCAL")).collect();
+        // Not an exact-length assertion: `emit_tail_scope_exit` (unrelated,
+        // pre-existing, untouched by this fix) also emits its own
+        // `OP_SET_LOCAL` — once for this arm's own scope exit and once for
+        // the whole `match`'s final scope exit — so the full disassembly
+        // legitimately contains more than just the two alternatives' binds.
+        // What's actually under test here is program order: each
+        // alternative's own bind is compiled (and so disassembles) strictly
+        // before either scope-exit's `OP_SET_LOCAL`, so the first two
+        // `OP_SET_LOCAL` lines in the whole disassembly are always exactly
+        // the two alternatives' binds of `r` — that's what the equality
+        // check below actually pins down.
+        assert!(
+            set_local_lines.len() >= 2,
+            "expected at least one OP_SET_LOCAL per alternative's bind of `r`: {out}"
+        );
+        assert_eq!(
+            set_local_lines[0].split_whitespace().last(),
+            set_local_lines[1].split_whitespace().last(),
+            "both alternatives must write `r` into the same slot: {out}"
+        );
+    }
+
+    #[test]
+    fn an_or_pattern_with_a_binding_that_does_not_match_pops_its_reserved_slot() {
+        // The specific bug a subagent review caught in an earlier version of
+        // this fix: the reserved slot(s) are pushed unconditionally BEFORE
+        // any alternative's test runs. If every alternative's test fails,
+        // nothing pops them — `fail_jumps` jumps straight past the
+        // success-path body and its `emit_tail_scope_exit` cleanup. This
+        // can't be caught by a compile-time-only assertion (it's a genuine
+        // stack-height/value bug, only observable by running the bytecode —
+        // see Task 4's VM-level regression test for the real proof), but this
+        // at least confirms the expected `OP_POP` is present in the
+        // disassembly on the "all alternatives failed" path, right before the
+        // jump to the next arm.
+        let src = "type Shape = Circle(Int) | Square(Int) | Triangle(Int); fn _f(s) { match s { Circle(r) | Square(r) => r, _ => -1, } }";
+        let (chunk, interner) = compile_program_chunk(src);
+        let out = disassemble_recursively(&chunk, "test", &interner);
+        assert!(
+            out.contains("OP_POP"),
+            "expected at least one OP_POP cleaning up the reserved (but never bound) \
+             slot on the all-alternatives-failed path: {out}"
+        );
+    }
+
+    #[test]
     fn a_match_arms_captured_local_flowing_into_a_nested_closure_does_not_corrupt_stack_bookkeeping(
     ) {
         // Probes the compile_match per-arm stack_depth bug class: a local
@@ -2374,5 +2696,22 @@ mod tests {
         let last_two: Vec<&str> = out.lines().rev().take(2).collect();
         assert!(last_two[0].contains("OP_RETURN"), "{out}");
         assert!(last_two[1].contains("OP_NIL"), "a Let as the final statement must still push an explicit Nil result, matching ember-tree's Stmt::Let => Flow::Normal(Value::Nil): {out}");
+    }
+
+    #[test]
+    fn a_guards_failure_after_a_bound_pattern_pops_the_bound_local() {
+        // Confirmed via the VM: before this fix, `Circle(r) if r > 100 => r,
+        // _ => -1` matched via `Circle(5)` (guard false) returns `5`, not
+        // `-1` — the bound-but-then-abandoned `r` leaks onto the stack and
+        // becomes whatever the next arm's `Return` picks up. This is a
+        // compile-time-only check that the expected cleanup `OP_POP` is
+        // present; the VM-level test in Task 4 is the real proof.
+        let src = "type Shape = Circle(Int); fn _f(s) { match s { Circle(r) if r > 100 => r, _ => -1, } }";
+        let (chunk, interner) = compile_program_chunk(src);
+        let out = disassemble_recursively(&chunk, "test", &interner);
+        assert!(
+            out.contains("OP_POP"),
+            "expected an OP_POP cleaning up `r` on the guard-failure path: {out}"
+        );
     }
 }
