@@ -34,6 +34,14 @@ enum Command {
     /// rendered runtime-error diagnostic — same pipeline as `run`, but the
     /// bytecode backend instead of the tree-walker.
     Vm { file: String },
+    /// Format a file. Rewrites it in place by default; with `--check`,
+    /// reports whether it's already formatted without writing, exiting
+    /// non-zero if not.
+    Fmt {
+        file: String,
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -45,6 +53,7 @@ fn main() -> ExitCode {
         Command::Typecheck { file } => run_typecheck(&file),
         Command::Run { file } => run_run(&file),
         Command::Vm { file } => run_vm(&file),
+        Command::Fmt { file, check } => run_fmt(&file, check),
     }
 }
 
@@ -62,7 +71,7 @@ fn run_tokens(path: &str) -> ExitCode {
     let Some(src) = read_source(path) else {
         return ExitCode::from(3);
     };
-    let (tokens, diags) = ember_lexer::lex(&src);
+    let (tokens, _trivia, diags) = ember_lexer::lex(&src);
     for t in &tokens {
         let text = &src[t.span.start as usize..t.span.end as usize];
         println!("{:?}\t{}..{}\t{:?}", t.kind, t.span.start, t.span.end, text);
@@ -264,6 +273,29 @@ fn run_vm(path: &str) -> ExitCode {
                 ember_diag::render::render(&e.to_diagnostic(&interner), path, &src, use_color)
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn run_fmt(path: &str, check: bool) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::from(3);
+    };
+    let formatted = ember_fmt::format(&src);
+    if check {
+        if formatted == src {
+            ExitCode::SUCCESS
+        } else {
+            eprintln!("{path} is not formatted");
+            ExitCode::from(2)
+        }
+    } else {
+        match fs::write(path, &formatted) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: could not write {path}: {e}");
+                ExitCode::from(3)
+            }
         }
     }
 }
