@@ -191,6 +191,7 @@ dependencies = [
  "ember-bytecode",
  "ember-compile",
  "ember-diag",
+ "ember-fmt",
  "ember-lexer",
  "ember-parser",
  "ember-resolve",
@@ -225,6 +226,13 @@ dependencies = [
 [[package]]
 name = "ember-fmt"
 version = "0.1.0"
+dependencies = [
+ "ember-ast",
+ "ember-lexer",
+ "ember-parser",
+ "ember-span",
+ "ember-tree",
+]
 
 [[package]]
 name = "ember-gc"
