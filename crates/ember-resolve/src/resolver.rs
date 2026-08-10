@@ -1,5 +1,6 @@
 use ember_ast::{Ast, Expr, Idx, Interner, Stmt};
 use ember_diag::Diagnostic;
+use rustc_hash::FxHashSet;
 
 use crate::binding::{Bindings, FunctionId};
 use crate::edit_distance::closest_match;
@@ -527,8 +528,76 @@ impl<'a> Resolver<'a> {
                 }
             }
             Pattern::Or(alts) => {
+                // Every alternative could bind the same name (that's the
+                // whole point of `Circle(r) | Square(r) => r`) — but only
+                // one alternative's bind ever executes at runtime, so
+                // this must declare each DISTINCT name exactly once, not
+                // once per occurrence. Declaring once per occurrence
+                // advances `next_slot` once per occurrence while only
+                // one physical slot is ever reserved for it (see
+                // `ember-compile`'s matching fix in
+                // `compile_pattern_match`), permanently desyncing every
+                // local declared afterward in this scope — `pop_scope`
+                // only releases as many slots as there are DISTINCT keys
+                // in the scope's binding map, not one per `declare` call.
+                let mut names = Vec::new();
                 for a in alts {
-                    self.declare_pattern_bindings(*a);
+                    self.collect_pattern_bind_names(*a, &mut names);
+                }
+                let mut declared = FxHashSet::default();
+                for name in names {
+                    if declared.insert(name) {
+                        self.functions[current].declare(name, false, true, span);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Collects every name a pattern would bind, in traversal order, WITH
+    /// duplicates if the same name is bound more than once (e.g. across two
+    /// alternatives of an `Or`) — the caller decides how to dedupe. A
+    /// read-only mirror of `declare_pattern_bindings`'s own traversal shape.
+    fn collect_pattern_bind_names(
+        &self,
+        pat: Idx<ember_ast::Pattern>,
+        out: &mut Vec<ember_ast::Symbol>,
+    ) {
+        use ember_ast::Pattern;
+        match self.ast.pat(pat) {
+            Pattern::Wild
+            | Pattern::Int(_)
+            | Pattern::Float(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Error => {}
+            Pattern::Bind(sym) => out.push(*sym),
+            Pattern::Ctor { args, .. } => {
+                for a in args {
+                    self.collect_pattern_bind_names(*a, out);
+                }
+            }
+            Pattern::Tuple(items) => {
+                for i in items {
+                    self.collect_pattern_bind_names(*i, out);
+                }
+            }
+            Pattern::List { items, rest } => {
+                for i in items {
+                    self.collect_pattern_bind_names(*i, out);
+                }
+                if let Some(r) = rest {
+                    self.collect_pattern_bind_names(*r, out);
+                }
+            }
+            Pattern::Record { fields, .. } => {
+                for (_, p) in fields {
+                    self.collect_pattern_bind_names(*p, out);
+                }
+            }
+            Pattern::Or(alts) => {
+                for a in alts {
+                    self.collect_pattern_bind_names(*a, out);
                 }
             }
         }
@@ -1232,5 +1301,50 @@ mod tests {
         let (bindings, diags) = resolve(&ast, &mut interner, &stmts);
         assert!(diags.is_empty(), "diags: {diags:?}");
         assert!(!bindings.resolutions.is_empty());
+    }
+
+    #[test]
+    fn or_pattern_repeated_name_declares_one_slot_not_one_per_occurrence() {
+        // Every name is `_`-prefixed (type `_Shape`, both variants, and `_f`
+        // itself) because this test only cares about slot bookkeeping, not
+        // program behavior — nothing here is ever called or constructed, and
+        // this resolver test's own `assert!(diags.is_empty())` below is
+        // strict (unlike `ember-compile`'s `assert_no_errors`, it catches
+        // warnings too), so every declared name that's never read/called
+        // needs the underscore convention already established elsewhere in
+        // this codebase (constructors only ever referenced from pattern
+        // position, and the enclosing type name, are never marked "used" —
+        // see `ember-vm`'s `nullary_adt_variant_constructs_via_match` for the
+        // same convention applied at the VM-test level).
+        let src = "
+            type _Shape = _Circle(Int) | _Square(Int);
+            fn _f(s) {
+                match s {
+                    _Circle(r) | _Square(r) => r,
+                    _ => 0,
+                }
+            }
+        ";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "parse diags: {parse_diags:?}");
+        let mut resolver = Resolver::new(&ast, &mut interner);
+        resolver.resolve_program(&stmts);
+        let (bindings, diags) = resolver.into_bindings();
+        assert!(diags.is_empty(), "diags: {diags:?}");
+        // stmts[0] is the `type` decl, stmts[1] is `fn _f`.
+        let fn_id = crate::binding::FunctionId::Fn(stmts[1]);
+        // `_f`'s own frame: param `s` (slot 0), the match's own hidden
+        // scrutinee slot (slot 1, reserved by `Expr::Match`'s resolution —
+        // see CHECKLIST.md's Phase 9 retroactive fixes section), and `r`
+        // (slot 2) — bound identically by both alternatives, so it must
+        // consume exactly ONE slot, not two. High water = 3.
+        assert_eq!(
+            bindings.frame_sizes.get(&fn_id),
+            Some(&3),
+            "Circle(r) | Square(r) must declare `r` once, not once per alternative \
+             (got {:?} — a value of 4 means the pre-fix double-declare bug is still \
+             present)",
+            bindings.frame_sizes.get(&fn_id)
+        );
     }
 }
