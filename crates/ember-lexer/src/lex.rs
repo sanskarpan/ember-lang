@@ -2,11 +2,23 @@ use crate::token::{Token, TokenKind};
 use ember_diag::Diagnostic;
 use ember_span::Span;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriviaKind {
+    Line,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub span: Span,
+}
+
 /// Total function: never panics, never returns early. Unrecognized input
 /// becomes TokenKind::Error with a diagnostic, and lexing continues — an
 /// editor needs a full token stream for text that is malformed 100% of the
 /// time it's being typed.
-pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+pub fn lex(src: &str) -> (Vec<Token>, Vec<Trivia>, Vec<Diagnostic>) {
     let mut lx = Lexer::new(src);
     let mut tokens = Vec::with_capacity(src.len() / 4 + 1);
     loop {
@@ -17,12 +29,13 @@ pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
             break;
         }
     }
-    (tokens, lx.diagnostics)
+    (tokens, lx.trivia, lx.diagnostics)
 }
 
 struct Lexer<'src> {
     src: &'src str,
     pos: u32,
+    trivia: Vec<Trivia>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -31,6 +44,7 @@ impl<'src> Lexer<'src> {
         Lexer {
             src,
             pos: 0,
+            trivia: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -78,14 +92,24 @@ impl<'src> Lexer<'src> {
                     self.advance();
                 }
                 '/' if self.peek_at(1) == '/' => {
+                    let start = self.pos;
                     while !self.at_end() && self.peek() != '\n' {
                         self.advance();
                     }
+                    self.trivia.push(Trivia {
+                        kind: TriviaKind::Line,
+                        span: Span::new(start, self.pos),
+                    });
                 }
                 '/' if self.peek_at(1) == '*' => {
+                    let start = self.pos;
                     self.advance();
                     self.advance();
                     self.block_comment();
+                    self.trivia.push(Trivia {
+                        kind: TriviaKind::Block,
+                        span: Span::new(start, self.pos),
+                    });
                 }
                 _ => break,
             }
@@ -271,7 +295,7 @@ mod tests {
 
     #[test]
     fn empty_source_yields_just_eof() {
-        let (tokens, diags) = lex("");
+        let (tokens, _trivia, diags) = lex("");
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenKind::Eof);
         assert!(diags.is_empty());
@@ -279,41 +303,41 @@ mod tests {
 
     #[test]
     fn whitespace_only_yields_just_eof() {
-        let (tokens, _) = lex("   \t\n\n  ");
+        let (tokens, _trivia, _) = lex("   \t\n\n  ");
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenKind::Eof);
     }
 
     #[test]
     fn eof_span_is_at_end_of_source() {
-        let (tokens, _) = lex("  ");
+        let (tokens, _trivia, _) = lex("  ");
         assert_eq!(tokens[0].span, Span::new(2, 2));
     }
 
     #[test]
     fn identifier_lexes_as_ident() {
-        let (tokens, _) = lex("foo_bar1");
+        let (tokens, _trivia, _) = lex("foo_bar1");
         assert_eq!(tokens[0].kind, TokenKind::Ident);
         assert_eq!(tokens[0].span, Span::new(0, 8));
     }
 
     #[test]
     fn keyword_lexes_as_its_own_kind() {
-        let (tokens, _) = lex("let");
+        let (tokens, _trivia, _) = lex("let");
         assert_eq!(tokens[0].kind, TokenKind::Let);
     }
 
     #[test]
     fn keyword_prefix_identifier_is_still_ident() {
         // "letter" must not be lexed as `let` + `ter`.
-        let (tokens, _) = lex("letter");
+        let (tokens, _trivia, _) = lex("letter");
         assert_eq!(tokens[0].kind, TokenKind::Ident);
         assert_eq!(tokens[0].span, Span::new(0, 6));
     }
 
     #[test]
     fn true_false_nil_are_keywords() {
-        let (tokens, _) = lex("true false nil");
+        let (tokens, _trivia, _) = lex("true false nil");
         assert_eq!(tokens[0].kind, TokenKind::True);
         assert_eq!(tokens[1].kind, TokenKind::False);
         assert_eq!(tokens[2].kind, TokenKind::Nil);
@@ -321,20 +345,20 @@ mod tests {
 
     #[test]
     fn decimal_int() {
-        let (tokens, _) = lex("42");
+        let (tokens, _trivia, _) = lex("42");
         assert_eq!(tokens[0].kind, TokenKind::Int);
     }
 
     #[test]
     fn int_with_underscore_separators() {
-        let (tokens, diags) = lex("1_000_000");
+        let (tokens, _trivia, diags) = lex("1_000_000");
         assert_eq!(tokens[0].kind, TokenKind::Int);
         assert!(diags.is_empty());
     }
 
     #[test]
     fn hex_bin_oct_ints() {
-        let (tokens, _) = lex("0xFF 0b101 0o17");
+        let (tokens, _trivia, _) = lex("0xFF 0b101 0o17");
         assert_eq!(tokens[0].kind, TokenKind::Int);
         assert_eq!(tokens[1].kind, TokenKind::Int);
         assert_eq!(tokens[2].kind, TokenKind::Int);
@@ -342,14 +366,14 @@ mod tests {
 
     #[test]
     fn float_basic() {
-        let (tokens, _) = lex("1.5");
+        let (tokens, _trivia, _) = lex("1.5");
         assert_eq!(tokens[0].kind, TokenKind::Float);
         assert_eq!(tokens[0].span, Span::new(0, 3));
     }
 
     #[test]
     fn float_with_exponent() {
-        let (tokens, _) = lex("1e10 1.5e-3");
+        let (tokens, _trivia, _) = lex("1e10 1.5e-3");
         assert_eq!(tokens[0].kind, TokenKind::Float);
         assert_eq!(tokens[1].kind, TokenKind::Float);
     }
@@ -361,7 +385,7 @@ mod tests {
         // until a later task, so we can't assert the *following* token's kind
         // yet (it's still an Error token right now) — what matters here is
         // that `number()` stops at the right boundary.
-        let (tokens, _) = lex("1..10");
+        let (tokens, _trivia, _) = lex("1..10");
         assert_eq!(tokens[0].kind, TokenKind::Int);
         assert_eq!(tokens[0].span, Span::new(0, 1));
     }
@@ -370,35 +394,35 @@ mod tests {
     fn bare_dot_after_int_is_not_consumed_as_float() {
         // "1." with no trailing digit: the int must stop at "1", not swallow
         // the dot into a malformed float.
-        let (tokens, _) = lex("1.foo");
+        let (tokens, _trivia, _) = lex("1.foo");
         assert_eq!(tokens[0].kind, TokenKind::Int);
         assert_eq!(tokens[0].span, Span::new(0, 1));
     }
 
     #[test]
     fn simple_string() {
-        let (tokens, diags) = lex(r#""hello""#);
+        let (tokens, _trivia, diags) = lex(r#""hello""#);
         assert_eq!(tokens[0].kind, TokenKind::Str);
         assert!(diags.is_empty());
     }
 
     #[test]
     fn string_with_escapes() {
-        let (tokens, diags) = lex(r#""a\nb\t\"c\\""#);
+        let (tokens, _trivia, diags) = lex(r#""a\nb\t\"c\\""#);
         assert_eq!(tokens[0].kind, TokenKind::Str);
         assert!(diags.is_empty());
     }
 
     #[test]
     fn string_with_unicode_escape() {
-        let (tokens, diags) = lex(r#""\u{1F600}""#);
+        let (tokens, _trivia, diags) = lex(r#""\u{1F600}""#);
         assert_eq!(tokens[0].kind, TokenKind::Str);
         assert!(diags.is_empty());
     }
 
     #[test]
     fn unterminated_string_reports_at_opening_quote() {
-        let (tokens, diags) = lex("\"never closed");
+        let (tokens, _trivia, diags) = lex("\"never closed");
         assert_eq!(tokens[0].kind, TokenKind::Error);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].primary_span(), Some(Span::new(0, 1)));
@@ -419,7 +443,7 @@ mod tests {
             ("::", TokenKind::ColonColon),
         ];
         for (src, expected) in cases {
-            let (tokens, _) = lex(src);
+            let (tokens, _trivia, _) = lex(src);
             assert_eq!(tokens[0].kind, *expected, "lexing {src:?}");
             assert_eq!(tokens[0].span, Span::new(0, 2), "span for {src:?}");
         }
@@ -450,7 +474,7 @@ mod tests {
             (";", TokenKind::Semi),
         ];
         for (src, expected) in cases {
-            let (tokens, _) = lex(src);
+            let (tokens, _trivia, _) = lex(src);
             assert_eq!(tokens[0].kind, *expected, "lexing {src:?}");
         }
     }
@@ -458,7 +482,7 @@ mod tests {
     #[test]
     fn equals_does_not_swallow_into_eqeq_wrongly() {
         // `a == b` must be Ident EqEq Ident, not Ident Eq Eq Ident.
-        let (tokens, _) = lex("a == b");
+        let (tokens, _trivia, _) = lex("a == b");
         assert_eq!(tokens[0].kind, TokenKind::Ident);
         assert_eq!(tokens[1].kind, TokenKind::EqEq);
         assert_eq!(tokens[2].kind, TokenKind::Ident);
@@ -466,14 +490,14 @@ mod tests {
 
     #[test]
     fn nested_block_comment_depth_three_closes_correctly() {
-        let (tokens, diags) = lex("/* a /* b /* c */ d */ e */ let x = 1;");
+        let (tokens, _trivia, diags) = lex("/* a /* b /* c */ d */ e */ let x = 1;");
         assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
         assert_eq!(tokens[0].kind, TokenKind::Let);
     }
 
     #[test]
     fn unterminated_block_comment_reports_one_diagnostic() {
-        let (_, diags) = lex("/* never closed");
+        let (_, _trivia, diags) = lex("/* never closed");
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unterminated block comment"));
     }
@@ -490,7 +514,7 @@ mod tests {
             "@@@ garbage $$$ input ###",
         ];
         for src in corpus {
-            let (_tokens, _diags) = lex(src);
+            let (_tokens, _trivia, _diags) = lex(src);
         }
     }
 
@@ -509,9 +533,29 @@ mod tests {
     ];
 
     #[test]
+    fn line_and_block_comments_are_recorded_as_trivia() {
+        let (tokens, trivia, diags) = lex("// leading\nlet x = 1; /* trailing */");
+        assert!(diags.is_empty());
+        assert_eq!(trivia.len(), 2, "{trivia:?}");
+        assert_eq!(trivia[0].kind, TriviaKind::Line);
+        assert_eq!(trivia[0].span, Span::new(0, 10)); // "// leading" (no trailing \n in the span)
+        assert_eq!(trivia[1].kind, TriviaKind::Block);
+        assert_eq!(trivia[1].span, Span::new(22, 36)); // "/* trailing */"
+                                                       // The token stream itself must be completely unaffected by this
+                                                       // change — same tokens, same spans, as before.
+        assert_eq!(tokens[0].kind, TokenKind::Let);
+    }
+
+    #[test]
+    fn no_comments_yields_empty_trivia() {
+        let (_tokens, trivia, _diags) = lex("let x = 1;");
+        assert!(trivia.is_empty());
+    }
+
+    #[test]
     fn spans_tile_the_source_exactly() {
         for src in CORPUS {
-            let (tokens, _) = lex(src);
+            let (tokens, _trivia, _) = lex(src);
             let mut cursor = 0u32;
             for t in &tokens {
                 assert!(
