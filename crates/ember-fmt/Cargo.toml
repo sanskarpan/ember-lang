@@ -4,3 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ember-ast = { path = "../ember-ast" }
+ember-lexer = { path = "../ember-lexer" }
+ember-parser = { path = "../ember-parser" }
+ember-span = { path = "../ember-span" }
+
+[dev-dependencies]
+ember-tree = { path = "../ember-tree" }
