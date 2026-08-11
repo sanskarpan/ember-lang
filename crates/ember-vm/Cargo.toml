@@ -19,3 +19,4 @@ ember-compile = { path = "../ember-compile" }
 [features]
 gc-stress = ["ember-gc/gc-stress"]
 gc-log = ["ember-gc/gc-log"]
+count-allocs = []
