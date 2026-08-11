@@ -1732,4 +1732,35 @@ mod tests {
             vm.gc_mut_for_test().bytes_allocated()
         );
     }
+
+    #[test]
+    fn let_with_a_block_initializer_containing_one_inner_let_works() {
+        let v = compile_and_run("let y = { let a = 1; a }; y;").unwrap();
+        assert_eq!(v, Value::Int(1));
+    }
+
+    #[test]
+    fn let_with_a_block_initializer_containing_two_inner_lets_works() {
+        let v = compile_and_run("let y = { let a = 1; let b = 2; a + b }; y;").unwrap();
+        assert_eq!(v, Value::Int(3));
+    }
+
+    #[test]
+    fn let_with_an_if_else_initializer_containing_an_inner_let_works() {
+        let v = compile_and_run("let y = if true { let a = 10; a } else { 0 }; y;").unwrap();
+        assert_eq!(v, Value::Int(10));
+    }
+
+    #[test]
+    fn let_with_a_nested_scope_initializer_inside_a_for_loop_body_works() {
+        // Exercises the fix under active `slot_shifts` (for-loop desugaring
+        // shifts physical slot numbers) — no pre-existing test puts a `let`
+        // inside a `for`-loop body at all, so this is new coverage, not just
+        // a regression check.
+        let v = compile_and_run(
+            "let xs = [1, 2, 3]; let mut total = 0; for x in xs { let y = { let a = x; a + 1 }; total = total + y; } total;",
+        )
+        .unwrap();
+        assert_eq!(v, Value::Int(9));
+    }
 }
