@@ -18,3 +18,44 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+
+  conformance-gc-stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: conformance suite under gc-stress
+        run: cargo test -p ember-cli --features gc-stress --test conformance
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: fuzz lexer
+        run: cd crates/ember-lexer && cargo fuzz run lex -- -max_total_time=30
+      - name: fuzz parser
+        run: cd crates/ember-parser && cargo fuzz run parse -- -max_total_time=30
+      - name: fuzz type checker
+        run: cd crates/ember-types && cargo fuzz run infer -- -max_total_time=30
+
+  bench-regression:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: benchmark base (merge-base with main)
+        run: |
+          git checkout $(git merge-base origin/main HEAD)
+          cargo bench -p ember-cli --bench backends -- --save-baseline base
+      - name: benchmark PR head
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          cargo bench -p ember-cli --bench backends -- --save-baseline pr
+      - name: check for regressions
+        run: python3 scripts/check_bench_regression.py
