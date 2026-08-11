@@ -1,0 +1,25 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== arithmetic ==
+0000    0 OP_NIL
+0001    8 OP_CONSTANT 0 (Int(3))
+0004    0 OP_SET_LOCAL slot=8
+0006    0 OP_POP
+0007    0 OP_GET_LOCAL slot=8
+0009    0 OP_DEFINE_GLOBAL(1) "a"
+0012   11 OP_NIL
+0013   19 OP_CONSTANT 2 (Int(4))
+0016   11 OP_SET_LOCAL slot=9
+0018   11 OP_POP
+0019   11 OP_GET_LOCAL slot=9
+0021   11 OP_DEFINE_GLOBAL(3) "b"
+0024   22 OP_GET_LOCAL slot=8
+0026   26 OP_GET_LOCAL slot=8
+0028   22 OP_MUL
+0029   30 OP_GET_LOCAL slot=9
+0031   34 OP_GET_LOCAL slot=9
+0033   30 OP_MUL
+0034   22 OP_ADD
+0035    0 OP_RETURN
