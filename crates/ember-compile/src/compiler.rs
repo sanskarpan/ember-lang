@@ -582,9 +582,28 @@ impl<'a> Compiler<'a> {
     /// valid because nothing hidden has been pushed since the resolver's
     /// own counter last matched this compiler's), then applies top-level
     /// dual registration if applicable.
-    fn declare_named_local(&mut self, name: Symbol, line: u32) {
+    /// Reserves one new physical local slot — bookkeeping only, no dual
+    /// registration. The caller must already have pushed the value (or a
+    /// placeholder) that will live in this slot; returns the slot's real
+    /// physical position (for `Op::SetLocal`/`Op::GetLocal` operands),
+    /// distinct from the resolver slot number recorded internally for
+    /// `slot_is_captured` lookups.
+    ///
+    /// Split out of the old combined `declare_named_local` for `Stmt::Let`
+    /// (see this crate's design doc, 2026-08-10), which must reserve its
+    /// name's slot *before* compiling its initializer — matching the
+    /// resolver's own declare-before-resolve order (needed so a
+    /// self-referential initializer like `let x = x + 1;` can be
+    /// rejected) — but must not dual-register a placeholder value as the
+    /// name's global.
+    fn reserve_named_local(&mut self) -> u32 {
         let resolver_slot = self.current().local_count - self.current().total_shift();
         self.push_local(Some(resolver_slot));
+        self.current().local_count - 1
+    }
+
+    fn declare_named_local(&mut self, name: Symbol, line: u32) {
+        self.reserve_named_local();
         self.maybe_dual_register(name, line);
     }
 
@@ -606,8 +625,20 @@ impl<'a> Compiler<'a> {
         let line = self.ast.span_of_stmt(idx).start;
         match self.ast.stmt(idx).clone() {
             ember_ast::Stmt::Let { name, init, .. } => {
+                // Reserve `name`'s slot BEFORE compiling `init`, matching
+                // the resolver's own declare-before-resolve order (see
+                // this crate's design doc, 2026-08-10) — otherwise any
+                // nested scope inside `init` (a block, an if/else branch)
+                // gets resolver slot numbers one higher than where this
+                // compiler's `local_count` actually puts them, since the
+                // resolver already "spent" a slot on `name` that this
+                // compiler hasn't reserved yet.
+                self.current().emit_op(Op::Nil, line);
+                let slot = self.reserve_named_local();
                 self.compile_expr(init);
-                self.declare_named_local(name, line);
+                self.emit_set_local(slot, line);
+                self.current().emit_op(Op::Pop, line); // discard SetLocal's duplicate
+                self.maybe_dual_register(name, line);
             }
             ember_ast::Stmt::StructDecl { name, .. } => {
                 // The struct's own name consumes a resolver slot (hoisted
@@ -2076,9 +2107,16 @@ mod tests {
             out.contains("OP_DEFINE_GLOBAL"),
             "top-level let must also define a global: {out}"
         );
+        // As of the let-initializer nested-scope slot desync fix
+        // (2026-08-10 design doc), every `Stmt::Let` unconditionally
+        // reserves its slot with `Op::Nil` up front and writes its
+        // initializer's result into that slot via `Op::SetLocal` +
+        // `Op::Pop` — this pop discards `SetLocal`'s leftover duplicate,
+        // it is NOT evidence that the local itself gets torn down (it
+        // stays live in its slot, as `OP_DEFINE_GLOBAL` below confirms).
         assert!(
-            !out.contains("OP_POP"),
-            "the top-level local itself is never popped: {out}"
+            out.contains("OP_POP"),
+            "every let now emits its own SetLocal-duplicate-discard pop: {out}"
         );
     }
 
@@ -2100,21 +2138,50 @@ mod tests {
         // unrelated to the block's *own* scope-exit cleanup that this test
         // is isolating. Binding it to a `let` instead means only the
         // block's own cleanup pops show up in the count.
+        // As of the let-initializer nested-scope slot desync fix
+        // (2026-08-10 design doc), the real count is 5, not the 2 this
+        // test asserted before that fix. Breakdown:
+        //   - the inner `let a = 1;` and `let b = 2;` are themselves
+        //     `Stmt::Let`s and each now gets its own SetLocal+Pop pair
+        //     for its reserved-slot write: 2 pops.
+        //   - the block's own pre-existing `emit_tail_scope_exit` cleanup
+        //     (popping `a` and `b` off the stack once the block's tail
+        //     value has been computed) is unchanged by this fix: 2 pops.
+        //   - the outer `let _r`'s own new SetLocal+Pop pair (writing the
+        //     block's result into `_r`'s reserved slot) contributes: 1
+        //     pop.
+        //   2 + 2 + 1 = 5.
         let (out, _) = compile_program_str("let _r = { let a = 1; let b = 2; a + b };");
         let pop_count = out.matches("OP_POP").count();
-        assert_eq!(pop_count, 2, "exactly 2 locals to clean up: {out}");
+        assert_eq!(pop_count, 5, "2 (inner lets' own pops) + 2 (block's tail scope-exit cleanup) + 1 (outer let's own pop) = 5: {out}");
         assert!(out.contains("OP_SET_LOCAL"), "{out}");
     }
 
     #[test]
-    fn a_block_with_no_locals_emits_no_pops() {
-        // See the note on the previous test: `let _r = { ... };` avoids the
-        // bare-statement's own unconditional `ExprStmt` pop so this test
-        // isolates exactly what it's named for — the block's own scope-exit
-        // logic (a no-op here, since it declared zero locals).
+    fn a_block_with_no_locals_only_shows_the_outer_lets_own_set_local_pop_pair() {
+        // Previously named `a_block_with_no_locals_emits_no_pops` and
+        // asserted NO `OP_POP`/`OP_SET_LOCAL` at all, on the theory that
+        // `let _r = { ... };` isolates the block's own (here, no-op)
+        // scope-exit logic from any pop. As of the let-initializer
+        // nested-scope slot desync fix (2026-08-10 design doc), that
+        // premise no longer holds: `let` itself now ALWAYS emits its own
+        // SetLocal+Pop pair for its reserved-slot write, regardless of
+        // whether its initializer is a block. So this test now asserts
+        // exactly 1 `OP_SET_LOCAL` and exactly 1 `OP_POP` — both
+        // attributable to the outer `let _r`, none to the block itself
+        // (which declares zero locals and so contributes nothing of its
+        // own) — i.e. the outer let's own pair is the ONLY pair present.
         let (out, _) = compile_program_str("let _r = { 1 + 2 };");
-        assert!(!out.contains("OP_POP"), "{out}");
-        assert!(!out.contains("OP_SET_LOCAL"), "{out}");
+        assert_eq!(
+            out.matches("OP_SET_LOCAL").count(),
+            1,
+            "only the outer let's own SetLocal, none from the (local-free) block: {out}"
+        );
+        assert_eq!(
+            out.matches("OP_POP").count(),
+            1,
+            "only the outer let's own pop, none from the (local-free) block: {out}"
+        );
     }
 
     #[test]
@@ -2671,11 +2738,16 @@ mod tests {
         assert!(resolve_diags.is_empty(), "{resolve_diags:?}");
         let proto = compile(&ast, &mut interner, &bindings, &stmts);
         let out = ember_bytecode::disasm::disassemble_chunk(&proto.chunk, "test", &interner);
-        // Only 0 OP_POPs for the whole program: `a`/`b`'s own Lets don't pop
-        // (their value permanently occupies their slot, as always), and the
-        // final `a * a + b * b` must NOT be popped either now, unlike an
-        // ordinary (non-last) ExprStmt.
-        assert!(!out.contains("OP_POP"), "{out}");
+        // As of the let-initializer nested-scope slot desync fix
+        // (2026-08-10 design doc), exactly 2 OP_POPs, not 0: `a`'s and
+        // `b`'s own top-level `let`s each now emit their own SetLocal+Pop
+        // pair for their reserved-slot write (2 pops total) — this pop
+        // discards SetLocal's leftover duplicate, it does NOT mean either
+        // local is torn down; each still permanently occupies its slot,
+        // as always. The final `a * a + b * b` must still NOT be popped,
+        // unlike an ordinary (non-last) ExprStmt — it flows straight into
+        // Return, confirmed by the `last_two` assertions below.
+        assert_eq!(out.matches("OP_POP").count(), 2, "{out}");
         let last_two: Vec<&str> = out.lines().rev().take(2).collect();
         assert!(last_two[0].contains("OP_RETURN"), "{out}");
         assert!(
