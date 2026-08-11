@@ -1,0 +1,11 @@
+---
+source: crates/ember-cli/tests/diagnostics.rs
+expression: rendered
+---
+Error: expected an expression, found `Semi`
+   ╭─[parse_error:1:9]
+   │
+ 1 │ let x = ;
+   │         ┬  
+   │         ╰── here
+───╯

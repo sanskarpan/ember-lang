@@ -11,3 +11,4 @@ ember-span = { path = "../ember-span" }
 
 [dev-dependencies]
 ember-tree = { path = "../ember-tree" }
+proptest = "1"

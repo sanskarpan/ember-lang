@@ -1,0 +1,23 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== adt_and_match ==
+0000    0 OP_NIL
+0001    0 OP_GET_LOCAL slot=8
+0003    0 OP_DEFINE_GLOBAL(0) "Shape"
+0006    0 OP_CLOSURE 0 <fn Circle / arity 1>
+0009    0 OP_GET_LOCAL slot=9
+0011    0 OP_DEFINE_GLOBAL(1) "Circle"
+0014    0 OP_CLOSURE 1 <fn Square / arity 1>
+0017    0 OP_GET_LOCAL slot=10
+0019    0 OP_DEFINE_GLOBAL(2) "Square"
+0022   45 OP_CLOSURE 2 <fn area / arity 1>
+0025   45 OP_GET_LOCAL slot=11
+0027   45 OP_DEFINE_GLOBAL(3) "area"
+0030  153 OP_GET_LOCAL slot=11
+0032  158 OP_GET_LOCAL slot=10
+0034  165 OP_CONSTANT 4 (Float(4.0))
+0037  158 OP_CALL argc=1
+0039  153 OP_CALL argc=1
+0041    0 OP_RETURN

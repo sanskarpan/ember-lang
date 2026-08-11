@@ -1,0 +1,16 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== higher_order ==
+0000    0 OP_CLOSURE 0 <fn apply_twice / arity 2>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "apply_twice"
+0008   33 OP_CLOSURE 1 <fn add_one / arity 1>
+0011   33 OP_GET_LOCAL slot=9
+0013   33 OP_DEFINE_GLOBAL(1) "add_one"
+0016   58 OP_GET_LOCAL slot=8
+0018   70 OP_GET_LOCAL slot=9
+0020   79 OP_CONSTANT 2 (Int(5))
+0023   58 OP_CALL argc=2
+0025    0 OP_RETURN

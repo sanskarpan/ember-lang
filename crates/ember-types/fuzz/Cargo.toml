@@ -1,0 +1,32 @@
+[package]
+name = "ember-types-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ember-types]
+path = ".."
+
+[dependencies.ember-parser]
+path = "../../ember-parser"
+
+[dependencies.ember-resolve]
+path = "../../ember-resolve"
+
+[dependencies.ember-diag]
+path = "../../ember-diag"
+
+[[bin]]
+name = "infer"
+path = "fuzz_targets/infer.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

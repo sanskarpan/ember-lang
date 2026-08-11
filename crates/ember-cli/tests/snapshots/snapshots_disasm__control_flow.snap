@@ -1,0 +1,19 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== control_flow ==
+0000    0 OP_NIL
+0001    8 OP_CONSTANT 0 (Int(10))
+0004    0 OP_SET_LOCAL slot=8
+0006    0 OP_POP
+0007    0 OP_GET_LOCAL slot=8
+0009    0 OP_DEFINE_GLOBAL(1) "x"
+0012   15 OP_GET_LOCAL slot=8
+0014   19 OP_CONSTANT 2 (Int(5))
+0017   15 OP_GREATER
+0018   12 OP_JUMP_IF_FALSE -> 0027
+0021   23 OP_CONSTANT 3 (Str("big"))
+0024   12 OP_JUMP -> 0030
+0027   38 OP_CONSTANT 4 (Str("small"))
+0030    0 OP_RETURN

@@ -1,0 +1,21 @@
+---
+source: crates/ember-cli/tests/diagnostics.rs
+expression: rendered
+---
+Error: undeclared name `totally_undefined_name`
+   ╭─[unresolved_name:1:9]
+   │
+ 1 │ let x = totally_undefined_name;
+   │         ───────────┬──────────  
+   │                    ╰──────────── not found in this scope
+───╯
+
+Warning: unused variable `x`
+   ╭─[unresolved_name:1:1]
+   │
+ 1 │ let x = totally_undefined_name;
+   │ ───────────────┬───────────────  
+   │                ╰───────────────── never used
+   │ 
+   │ Help: prefix with an underscore (`_x`) if this is intentional
+───╯

@@ -25,3 +25,11 @@ clap = { version = "4", features = ["derive"] }
 [features]
 gc-stress = ["ember-vm/gc-stress"]
 gc-log = ["ember-vm/gc-log"]
+
+[[bench]]
+name = "backends"
+harness = false
+
+[dev-dependencies]
+insta = "1"
+criterion = "0.5"
