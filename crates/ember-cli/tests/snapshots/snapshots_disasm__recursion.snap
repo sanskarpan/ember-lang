@@ -1,0 +1,12 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== recursion ==
+0000    0 OP_CLOSURE 0 <fn fact / arity 1>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "fact"
+0008   61 OP_GET_LOCAL slot=8
+0010   66 OP_CONSTANT 1 (Int(10))
+0013   61 OP_CALL argc=1
+0015    0 OP_RETURN

@@ -1,0 +1,26 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== generics ==
+0000    0 OP_CLOSURE 0 <fn identity / arity 1>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "identity"
+0008   22 OP_NIL
+0009   30 OP_GET_LOCAL slot=8
+0011   39 OP_CONSTANT 1 (Int(5))
+0014   30 OP_CALL argc=1
+0016   22 OP_SET_LOCAL slot=9
+0018   22 OP_POP
+0019   22 OP_GET_LOCAL slot=9
+0021   22 OP_DEFINE_GLOBAL(2) "a"
+0024   43 OP_NIL
+0025   51 OP_GET_LOCAL slot=8
+0027   60 OP_CONSTANT 3 (Str("hi"))
+0030   51 OP_CALL argc=1
+0032   43 OP_SET_LOCAL slot=10
+0034   43 OP_POP
+0035   43 OP_GET_LOCAL slot=10
+0037   43 OP_DEFINE_GLOBAL(4) "b"
+0040   67 OP_GET_LOCAL slot=9
+0042    0 OP_RETURN

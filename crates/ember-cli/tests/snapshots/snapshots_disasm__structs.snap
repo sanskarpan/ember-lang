@@ -1,0 +1,24 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== structs ==
+0000    0 OP_NIL
+0001    0 OP_GET_LOCAL slot=8
+0003    0 OP_DEFINE_GLOBAL(0) "Point"
+0006   32 OP_NIL
+0007   40 OP_CONSTANT 1 (Str("x"))
+0010   51 OP_CONSTANT 2 (Int(3))
+0013   40 OP_CONSTANT 3 (Str("y"))
+0016   57 OP_CONSTANT 4 (Int(4))
+0019   40 OP_MAKE_RECORD "Point" fields=2
+0024   32 OP_SET_LOCAL slot=9
+0026   32 OP_POP
+0027   32 OP_GET_LOCAL slot=9
+0029   32 OP_DEFINE_GLOBAL(5) "p"
+0032   62 OP_GET_LOCAL slot=9
+0034   62 OP_GET_FIELD(1) "x"
+0037   68 OP_GET_LOCAL slot=9
+0039   68 OP_GET_FIELD(3) "y"
+0042   62 OP_ADD
+0043    0 OP_RETURN

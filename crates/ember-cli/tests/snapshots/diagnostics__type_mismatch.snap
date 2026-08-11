@@ -1,0 +1,13 @@
+---
+source: crates/ember-cli/tests/diagnostics.rs
+expression: rendered
+---
+Error: type does not match its annotation
+   ╭─[type_mismatch:1:8]
+   │
+ 1 │ let x: Int = "not an int";
+   │        ─┬─   ──────┬─────  
+   │         ╰────────────────── annotated as `Int`
+   │                    │       
+   │                    ╰─────── but this has type `String`
+───╯

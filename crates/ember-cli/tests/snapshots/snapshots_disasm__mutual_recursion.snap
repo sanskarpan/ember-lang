@@ -1,0 +1,15 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== mutual_recursion ==
+0000    0 OP_CLOSURE 0 <fn is_even / arity 1>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "is_even"
+0008   64 OP_CLOSURE 1 <fn is_odd / arity 1>
+0011   64 OP_GET_LOCAL slot=9
+0013   64 OP_DEFINE_GLOBAL(1) "is_odd"
+0016  130 OP_GET_LOCAL slot=8
+0018  138 OP_CONSTANT 2 (Int(20))
+0021  130 OP_CALL argc=1
+0023    0 OP_RETURN

@@ -1,0 +1,23 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== strings ==
+0000    0 OP_NIL
+0001    8 OP_CONSTANT 0 (Str("hello"))
+0004    0 OP_SET_LOCAL slot=8
+0006    0 OP_POP
+0007    0 OP_GET_LOCAL slot=8
+0009    0 OP_DEFINE_GLOBAL(1) "a"
+0012   17 OP_NIL
+0013   25 OP_CONSTANT 2 (Str("world"))
+0016   17 OP_SET_LOCAL slot=9
+0018   17 OP_POP
+0019   17 OP_GET_LOCAL slot=9
+0021   17 OP_DEFINE_GLOBAL(3) "b"
+0024   34 OP_GET_LOCAL slot=8
+0026   38 OP_CONSTANT 4 (Str(" "))
+0029   34 OP_ADD
+0030   44 OP_GET_LOCAL slot=9
+0032   34 OP_ADD
+0033    0 OP_RETURN

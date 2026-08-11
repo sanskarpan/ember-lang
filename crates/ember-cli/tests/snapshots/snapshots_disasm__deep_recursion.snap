@@ -1,0 +1,12 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== deep_recursion ==
+0000    0 OP_CLOSURE 0 <fn sum_to / arity 1>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "sum_to"
+0008   65 OP_GET_LOCAL slot=8
+0010   72 OP_CONSTANT 1 (Int(50))
+0013   65 OP_CALL argc=1
+0015    0 OP_RETURN

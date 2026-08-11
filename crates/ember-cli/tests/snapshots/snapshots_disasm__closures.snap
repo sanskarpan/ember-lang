@@ -1,0 +1,24 @@
+---
+source: crates/ember-cli/tests/snapshots_disasm.rs
+expression: disasm
+---
+== closures ==
+0000    0 OP_CLOSURE 0 <fn make_counter / arity 0>
+0003    0 OP_GET_LOCAL slot=8
+0005    0 OP_DEFINE_GLOBAL(0) "make_counter"
+0008   82 OP_NIL
+0009   96 OP_GET_LOCAL slot=8
+0011   96 OP_CALL argc=0
+0013   82 OP_SET_LOCAL slot=9
+0015   82 OP_POP
+0016   82 OP_GET_LOCAL slot=9
+0018   82 OP_DEFINE_GLOBAL(1) "counter"
+0021  112 OP_GET_LOCAL slot=9
+0023  112 OP_CALL argc=0
+0025  112 OP_POP
+0026  123 OP_GET_LOCAL slot=9
+0028  123 OP_CALL argc=0
+0030  123 OP_POP
+0031  134 OP_GET_LOCAL slot=9
+0033  134 OP_CALL argc=0
+0035    0 OP_RETURN

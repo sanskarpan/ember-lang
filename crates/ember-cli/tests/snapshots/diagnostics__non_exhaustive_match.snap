@@ -1,0 +1,17 @@
+---
+source: crates/ember-cli/tests/diagnostics.rs
+expression: rendered
+---
+Error: non-exhaustive patterns
+   ╭─[non_exhaustive_match:3:5]
+   │
+ 3 │ ╭─▶     match s {
+   ┆ ┆   
+ 5 │ ├─▶     }
+   │ │           
+   │ ╰─────────── this match is not exhaustive
+   │     
+   │     Help: add a `_ => ...` arm to cover the remaining cases
+   │     
+   │     Note: missing: Square(_)
+───╯
