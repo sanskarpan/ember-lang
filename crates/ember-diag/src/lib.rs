@@ -1,5 +1,6 @@
 use ember_span::Span;
 
+pub mod explain;
 pub mod render;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
