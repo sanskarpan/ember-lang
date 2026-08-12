@@ -1,6 +1,6 @@
 use ember_span::Span;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[repr(u8)]
 pub enum TokenKind {
     // literals
