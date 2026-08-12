@@ -16,6 +16,7 @@ pub struct Resolver<'a> {
     functions: Vec<FunctionCtx>,
     diagnostics: Vec<Diagnostic>,
     bindings: Bindings,
+    repl_globals: FxHashSet<ember_ast::Symbol>,
 }
 
 impl<'a> Resolver<'a> {
@@ -26,9 +27,19 @@ impl<'a> Resolver<'a> {
             functions: vec![FunctionCtx::new(FunctionId::TopLevel)],
             diagnostics: Vec::new(),
             bindings: Bindings::new(),
+            repl_globals: FxHashSet::default(),
         };
         r.seed_native_globals();
         r
+    }
+
+    /// Registers names known to already exist as globals from prior REPL
+    /// entries. These are looked up in a separate, unconditional-Global
+    /// table in `resolve_name` — never allocating a local resolver slot,
+    /// since each REPL entry is compiled as its own independent chunk with
+    /// no shared local-slot layout across entries.
+    pub fn seed_repl_globals(&mut self, names: &[ember_ast::Symbol]) {
+        self.repl_globals.extend(names.iter().copied());
     }
 
     fn seed_native_globals(&mut self) {
@@ -89,6 +100,7 @@ impl<'a> Resolver<'a> {
                 let init_span = info.span;
                 self.emit(
                     Diagnostic::error(format!("cannot use `{name_text}` in its own initializer"))
+                        .with_code("E0301")
                         .with_primary(span, "used here")
                         .with_secondary(init_span, "while initializing this binding"),
                 );
@@ -112,11 +124,15 @@ impl<'a> Resolver<'a> {
             info.used = true;
             return Some(crate::binding::Resolution::Global { symbol: name_sym });
         }
+        if self.repl_globals.contains(&name_sym) {
+            return Some(crate::binding::Resolution::Global { symbol: name_sym });
+        }
         let suggestion = {
             let names = self.reachable_names();
             closest_match(name_text, names.iter().map(|s| s.as_str())).map(|s| s.to_string())
         };
         let mut diag = Diagnostic::error(format!("undeclared name `{name_text}`"))
+            .with_code("E0302")
             .with_primary(span, "not found in this scope");
         if let Some(sugg) = suggestion {
             diag = diag.with_help(format!("did you mean `{sugg}`?"));
@@ -214,6 +230,7 @@ impl<'a> Resolver<'a> {
             }
             self.diagnostics.push(
                 Diagnostic::warning(format!("unused variable `{name}`"))
+                    .with_code("E0303")
                     .with_primary(info.span, "never used")
                     .with_help(format!(
                         "prefix with an underscore (`_{name}`) if this is intentional"
@@ -386,6 +403,7 @@ impl<'a> Resolver<'a> {
                         let span = self.ast.span_of_stmt(*s);
                         self.emit(
                             Diagnostic::warning("unreachable code")
+                                .with_code("E0304")
                                 .with_primary(span, "this code can never run"),
                         );
                     }
@@ -402,6 +420,7 @@ impl<'a> Resolver<'a> {
                         let span = self.ast.span_of_expr(*t);
                         self.emit(
                             Diagnostic::warning("unreachable code")
+                                .with_code("E0304")
                                 .with_primary(span, "this code can never run"),
                         );
                     }
@@ -616,6 +635,7 @@ impl<'a> Resolver<'a> {
                             Diagnostic::error(format!(
                                 "cannot use `{text}` in its own initializer"
                             ))
+                            .with_code("E0301")
                             .with_primary(span, "used here")
                             .with_secondary(init_span, "while initializing this binding"),
                         );
@@ -627,6 +647,7 @@ impl<'a> Resolver<'a> {
                             Diagnostic::error(format!(
                                 "cannot assign to immutable variable `{text}`"
                             ))
+                            .with_code("E0305")
                             .with_primary(span, "assigned here")
                             .with_secondary(decl_span, "declared here")
                             .with_help(format!("consider changing to `let mut {text}`")),
@@ -646,6 +667,7 @@ impl<'a> Resolver<'a> {
                             Diagnostic::error(format!(
                                 "cannot assign to immutable captured variable `{text}`"
                             ))
+                            .with_code("E0306")
                             .with_primary(span, "assigned here")
                             .with_help(format!(
                                 "consider changing the outer binding to `let mut {text}`"
@@ -1345,6 +1367,68 @@ mod tests {
              (got {:?} — a value of 4 means the pre-fix double-declare bug is still \
              present)",
             bindings.frame_sizes.get(&fn_id)
+        );
+    }
+
+    fn find_var_expr(
+        ast: &Ast,
+        bindings: &crate::binding::Bindings,
+        name: ember_ast::Symbol,
+    ) -> Idx<Expr> {
+        *bindings
+            .resolutions
+            .keys()
+            .find(|idx| matches!(ast.expr(**idx), Expr::Var(s) if *s == name))
+            .expect("no Var reference to this name found")
+    }
+
+    #[test]
+    fn a_seeded_repl_global_resolves_from_top_level_code_in_a_separate_resolve_call() {
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse("x + 1;");
+        assert!(parse_diags.is_empty());
+        let x_symbol = interner.intern("x");
+
+        let mut resolver = Resolver::new(&ast, &mut interner);
+        resolver.seed_repl_globals(&[x_symbol]);
+        resolver.resolve_program(&stmts);
+        assert!(
+            resolver.diagnostics().is_empty(),
+            "diags: {:?}",
+            resolver.diagnostics()
+        );
+        let (bindings, _) = resolver.into_bindings();
+        let var_expr = find_var_expr(&ast, &bindings, x_symbol);
+        assert!(
+            matches!(
+                bindings.resolutions.get(&var_expr),
+                Some(crate::binding::Resolution::Global { .. })
+            ),
+            "a seeded REPL global must resolve as Global, never Local, even when referenced from this resolve call's own top level"
+        );
+    }
+
+    #[test]
+    fn a_new_entrys_own_declaration_shadows_a_seeded_repl_global_of_the_same_name() {
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse("let x = 2; x;");
+        assert!(parse_diags.is_empty());
+        let x_symbol = interner.intern("x");
+
+        let mut resolver = Resolver::new(&ast, &mut interner);
+        resolver.seed_repl_globals(&[x_symbol]);
+        resolver.resolve_program(&stmts);
+        assert!(
+            resolver.diagnostics().is_empty(),
+            "diags: {:?}",
+            resolver.diagnostics()
+        );
+        let (bindings, _) = resolver.into_bindings();
+        let var_expr = find_var_expr(&ast, &bindings, x_symbol);
+        assert!(
+            matches!(
+                bindings.resolutions.get(&var_expr),
+                Some(crate::binding::Resolution::Local { .. })
+            ),
+            "this entry's own `let x` must shadow the seeded REPL global, resolving as Local like any ordinary top-level let"
         );
     }
 }

@@ -2,7 +2,7 @@
 source: crates/ember-cli/tests/diagnostics.rs
 expression: rendered
 ---
-Error: non-exhaustive patterns
+[E0502] Error: non-exhaustive patterns
    ╭─[non_exhaustive_match:3:5]
    │
  3 │ ╭─▶     match s {

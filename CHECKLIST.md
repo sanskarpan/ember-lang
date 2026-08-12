@@ -416,22 +416,27 @@
 
 ## Phase 13 — CLI & REPL (16 tasks)
 
-- [ ] 🔴 `clap` derive; all subcommands from SPEC §16
-- [ ] 🔴 `run FILE --backend tree|vm --time --gc-stress`
-- [ ] 🔴 `check FILE` — diagnostics only, exit code reflects errors
-- [ ] 🔴 `tokens`, `ast --typed --json`, `types`, `disasm`
-- [ ] 🔴 **`trace FILE`** — full inference derivation: constraints, unification steps, substitution evolution
-- [ ] 🔴 `bench FILE` — both backends, timing + allocations + a speedup ratio
-- [ ] 🔴 `explain E0308` — extended error documentation from a static registry
-- [ ] 🔴 REPL with `rustyline`: history, multi-line continuation on unbalanced delimiters
-- [ ] 🔴 REPL persists the environment across inputs; `:type expr`, `:ast expr`, `:disasm expr`, `:reset`, `:load file`
-- [ ] 🔴 REPL prints inferred types alongside values when `--show-types`
-- [ ] 🟡 `debug FILE` — TUI stepper (ratatui): source, stack, locals, upvalues, next instruction
-- [ ] 🔴 Colored output honoring `NO_COLOR` and non-TTY detection
-- [ ] 🔴 Exit codes: 0 ok, 1 runtime error, 2 compile error, 3 usage
-- [ ] 🔴 Shell completions
-- [ ] 🟢 `--emit tokens|ast|hir|bytecode` pipeline dumping
-- [ ] 🟢 Timing breakdown per phase with `--time`
+- [x] 🔴 `clap` derive; all subcommands from SPEC §16 — except `ember lsp`, deliberately out of scope: Phase 14 (LSP Server) hasn't been built yet, and the checklist's own Phase 13 item list below never mentions `lsp` as a required subcommand.
+- [x] 🔴 `run FILE --backend tree|vm --time --gc-stress` — `run`/`vm` merged into one command; `--gc-stress` required promoting `GcHeap`'s stress mode from a compile-time-only `cfg!(feature = "gc-stress")` check to a genuine runtime `stress: bool` field (defaulting to the same compile-time value, so Phase 12's CI job is unaffected), since the CLI flag needs to toggle it per-invocation.
+- [x] 🔴 `check FILE` — diagnostics only, exit code reflects errors
+- [x] 🔴 `tokens`, `ast --typed --json`, `types`, `disasm` — `ast --json` required a real, unplanned architectural fix: `serde::Serialize` couldn't be derived on `ember-ast`'s types until `Symbol` (previously a bare type alias for a foreign `string-interner` type) became a local newtype, since the orphan rule blocks implementing a foreign trait (`Serialize`) for a foreign type. `types` retires the old ad hoc `resolve`/`typecheck` commands, splitting their old conflated output across `types` (schemes only), `ast --typed` (per-expression types), and `check` (exhaustiveness diagnostics).
+- [x] 🔴 **`trace FILE`** — full inference derivation: constraints, unification steps, substitution evolution — with one honest, documented gap: it renders every step's types against the *final* substitution, not a per-step historical snapshot, since `InferenceTrace` (built in an earlier phase anticipating this command) records each `UnifyStep`'s types and origin but not an incremental substitution snapshot. "Substitution evolution" is visible in the sense that failed steps show clearly, not in the sense of watching the substitution grow step by step.
+- [x] 🔴 `bench FILE` — both backends, timing + allocations + a speedup ratio — allocation counting works by having `ember-cli`'s own `Cargo.toml` unconditionally enable `ember-vm`'s `count-allocs` feature (Phase 12), which is safe today (no other crate depends on `ember-vm`) but is a workspace-wide feature-unification risk worth remembering if `ember-lsp`/`ember-wasm` ever gain a real dependency on `ember-vm`.
+- [x] 🔴 `explain E0308` — extended error documentation from a static registry — required retrofitting real error codes onto all 51 diagnostic-construction call sites across the lexer/parser/resolver/type-checker/exhaustiveness-checker first (grouped by logical error kind into 35 distinct `E0NNN` codes, not 1:1 per call site), then building the registry against that ground truth. A bidirectional test (every real code has a registry entry, and every registry entry corresponds to a real call site) guards against the two ways this could silently drift.
+- [x] 🔴 REPL with `rustyline`: history, multi-line continuation on unbalanced delimiters
+- [x] 🔴 REPL persists the environment across inputs; `:type expr`, `:ast expr`, `:disasm expr`, `:reset`, `:load file` — real, non-replaying incremental execution on **both** backends, not just the easy tree-walker path. The tree-walker reuses its already-public `Interp`/`Env`. The VM backend needed two genuine new pieces: a resolver-side unconditional-Global lookup table for names declared in prior REPL entries (deliberately *not* built on the existing `declare()`/local-slot machinery, which only makes sense within one compiled chunk), and a `Vm::run_incremental` that runs a freshly-compiled small chunk against the *same* VM's persistent `globals`/GC heap rather than constructing a fresh `Vm`. An early design draft (compiling against the whole-buffer resolve's `Bindings` instead of a fresh, narrowly-seeded resolve) was tried and produces a real out-of-bounds panic — the shipped design was verified working end to end before and after implementation.
+- [x] 🔴 REPL prints inferred types alongside values when `--show-types`
+- [x] 🟡 `debug FILE` — TUI stepper (ratatui): source, stack, locals, upvalues, next instruction — one honest gap: the locals panel shows `slot N: <value>`, not real variable names, since the resolver's persisted `Bindings` only records use-site resolutions, not a persistent slot→name table (that mapping lives in per-function `Scope`s, popped and discarded once each function finishes resolving). Threading a real name table through would be a resolver change, not a CLI-sized addition. Verified interactively via a real pty (not just unit tests against `DebugState` directly), confirming clean terminal state restoration on quit and on a simulated step/run/quit sequence.
+- [x] 🔴 Colored output honoring `NO_COLOR` and non-TTY detection — `std::io::IsTerminal` (stable, no new dependency).
+- [x] 🔴 Exit codes: 0 ok, 1 runtime error, 2 compile error, 3 usage — fixed a real pre-existing bug: `run`'s runtime-error path returned exit code 2 (same as a compile-time diagnostic failure) before this phase; it now correctly returns 1.
+- [x] 🔴 Shell completions — a hidden `ember completions <shell>` subcommand via `clap_complete`, not committed generated files.
+- [ ] 🟢 `--emit tokens|ast|hir|bytecode` pipeline dumping — deferred.
+- [ ] 🟢 Timing breakdown per phase with `--time` — deferred; `--time` reports total wall-clock only.
+
+**Design decisions and gaps beyond the checklist's literal scope, found or made during implementation:**
+- **`Symbol` became a local newtype**, not a bare alias for `string-interner`'s own symbol type — required by `ast --json`'s `Serialize` derive (the orphan rule blocks implementing a foreign trait for a foreign type). Verified via a workspace-wide grep that `Symbol` was already used 100% opaquely everywhere (only through `Interner::intern`/`resolve`), so this was a safe, contained change; the full workspace test suite stayed green throughout.
+- **A REPL meta-command bug found during this phase's own final verification pass, fixed on the spot**: `:type`/`:ast`/`:disasm` initially required the user to type a trailing `;` (`:type x;` instead of the intended `:type x`), since the shared "parse in context" helper appended the argument straight into the buffer without ensuring it terminated as a valid statement. Fixed by appending `;` when the argument doesn't already end with one.
+- **`Interner` gained a `Clone` derive**, needed so the REPL's non-mutating `:type`/`:ast`/`:disasm` commands can parse "in context" (a cloned buffer + cloned interner) without touching the real session state at all.
 
 ---
 

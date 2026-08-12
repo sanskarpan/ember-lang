@@ -80,9 +80,12 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    fn error(&mut self, span: Span, msg: impl Into<String>) {
-        self.diagnostics
-            .push(Diagnostic::error(msg).with_primary(span, "here"));
+    fn error(&mut self, span: Span, code: &'static str, msg: impl Into<String>) {
+        self.diagnostics.push(
+            Diagnostic::error(msg)
+                .with_code(code)
+                .with_primary(span, "here"),
+        );
     }
 
     fn skip_trivia(&mut self) {
@@ -121,7 +124,11 @@ impl<'src> Lexer<'src> {
         let mut depth = 1usize;
         loop {
             if self.at_end() {
-                self.error(Span::new(start, self.pos), "unterminated block comment");
+                self.error(
+                    Span::new(start, self.pos),
+                    "E0101",
+                    "unterminated block comment",
+                );
                 return;
             }
             if self.peek() == '*' && self.peek_at(1) == '/' {
@@ -188,6 +195,7 @@ impl<'src> Lexer<'src> {
             other => {
                 self.error(
                     Span::new(start, self.pos),
+                    "E0102",
                     format!("unexpected character `{other}`"),
                 );
                 TokenKind::Error
@@ -246,7 +254,11 @@ impl<'src> Lexer<'src> {
     fn string(&mut self, start: u32) -> TokenKind {
         loop {
             if self.at_end() {
-                self.error(Span::new(start, start + 1), "unterminated string literal");
+                self.error(
+                    Span::new(start, start + 1),
+                    "E0103",
+                    "unterminated string literal",
+                );
                 return TokenKind::Error;
             }
             match self.advance().unwrap() {

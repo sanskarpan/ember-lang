@@ -3,7 +3,7 @@ use ember_lexer::TokenKind;
 use crate::idx::Idx;
 use crate::interner::Symbol;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Expr {
     Int(i64),
     Float(f64),

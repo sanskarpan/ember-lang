@@ -6,7 +6,7 @@ use crate::pattern::Pattern;
 use crate::stmt::Stmt;
 use crate::ty::TypeExpr;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize)]
 pub struct Ast {
     exprs: Vec<Expr>,
     expr_spans: Vec<Span>,

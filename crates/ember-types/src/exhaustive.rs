@@ -241,6 +241,7 @@ pub fn check_exhaustive(
         if !any_reachable {
             diags.push(
                 Diagnostic::warning("unreachable pattern")
+                    .with_code("E0501")
                     .with_primary(arm.span, "this pattern can never match"),
             );
         }
@@ -258,6 +259,7 @@ pub fn check_exhaustive(
             .collect();
         diags.push(
             Diagnostic::error("non-exhaustive patterns")
+                .with_code("E0502")
                 .with_primary(match_span, "this match is not exhaustive")
                 .with_note(format!("missing: {}", rendered.join(", ")))
                 .with_help("add a `_ => ...` arm to cover the remaining cases"),

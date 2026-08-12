@@ -130,15 +130,18 @@ fn infinite_type_error(
     let var_str = display_ty(&Ty::Var(v), subst, adts, interner);
     let t_str = display_ty(t, subst, adts, interner);
     Diagnostic::error(format!("infinite type: `{var_str}` occurs in `{t_str}`"))
+        .with_code("E0413")
         .with_primary(origin.primary_span(), "while trying to unify these types")
         .with_help("a type cannot contain itself — this usually comes from a function whose return type depends on calling itself with its own type")
 }
 
 fn arity_error(expected: usize, found: usize, origin: &Origin) -> Diagnostic {
-    Diagnostic::error(format!("expected {expected} argument(s), found {found}")).with_primary(
-        origin.primary_span(),
-        format!("expected {expected}, found {found}"),
-    )
+    Diagnostic::error(format!("expected {expected} argument(s), found {found}"))
+        .with_code("E0402")
+        .with_primary(
+            origin.primary_span(),
+            format!("expected {expected}, found {found}"),
+        )
 }
 
 fn mismatch_error(
@@ -157,6 +160,7 @@ fn mismatch_error(
             then_span,
             else_span,
         } => Diagnostic::error("type mismatch in `if` branches")
+            .with_code("E0414")
             .with_secondary(*if_span, "this `if` expression must have a single type")
             .with_primary(*then_span, format!("this branch has type `{a_str}`"))
             .with_primary(*else_span, format!("this branch has type `{b_str}`"))
@@ -167,6 +171,7 @@ fn mismatch_error(
             param_idx,
             fn_name,
         } => Diagnostic::error("argument type mismatch")
+            .with_code("E0414")
             .with_primary(*arg_span, format!("expected `{a_str}`, found `{b_str}`"))
             .with_secondary(
                 *call_span,
@@ -184,6 +189,7 @@ fn mismatch_error(
             lhs_span,
             rhs_span,
         } => Diagnostic::error("operand type mismatch")
+            .with_code("E0414")
             .with_primary(*lhs_span, format!("this has type `{a_str}`"))
             .with_primary(*rhs_span, format!("this has type `{b_str}`"))
             .with_secondary(*op_span, "in this operator expression"),
@@ -191,15 +197,18 @@ fn mismatch_error(
             annot_span,
             value_span,
         } => Diagnostic::error("type does not match its annotation")
+            .with_code("E0414")
             .with_primary(*annot_span, format!("annotated as `{a_str}`"))
             .with_primary(*value_span, format!("but this has type `{b_str}`")),
         Origin::MatchArms {
             first_span,
             this_span,
         } => Diagnostic::error("match arms have different types")
+            .with_code("E0414")
             .with_primary(*first_span, format!("first arm has type `{a_str}`"))
             .with_primary(*this_span, format!("this arm has type `{b_str}`")),
         Origin::Return { fn_span, expr_span } => Diagnostic::error("return type mismatch")
+            .with_code("E0414")
             .with_secondary(*fn_span, format!("this function should return `{a_str}`"))
             .with_primary(*expr_span, format!("but this returns `{b_str}`")),
         Origin::ListElement {
@@ -207,6 +216,7 @@ fn mismatch_error(
             elem_span,
             index,
         } => Diagnostic::error("list elements have different types")
+            .with_code("E0414")
             .with_secondary(
                 *list_span,
                 format!("this list's elements have type `{a_str}`"),
@@ -214,10 +224,12 @@ fn mismatch_error(
             .with_primary(*elem_span, format!("element {index} has type `{b_str}`")),
         Origin::WhileCond { span } => {
             Diagnostic::error(format!("expected `Bool`, found `{b_str}`"))
+                .with_code("E0414")
                 .with_primary(*span, "a `while` condition must be a Bool")
         }
         Origin::IndexTarget { span } => {
             Diagnostic::error(format!("expected `{a_str}`, found `{b_str}`"))
+                .with_code("E0414")
                 .with_primary(*span, "type mismatch here")
         }
     }
