@@ -94,6 +94,33 @@ impl Vm {
         }
     }
 
+    /// Forces every allocation to trigger a collection, regardless of the
+    /// `gc-stress` compile-time feature — used by the CLI's `run --gc-stress`
+    /// flag to exercise GC-triggered bugs on demand.
+    pub fn set_gc_stress(&mut self, on: bool) {
+        self.gc.set_stress(on);
+    }
+
+    /// A read-only snapshot of the physical value stack, for the debug TUI
+    /// (and any other introspection caller) — mirrors exactly what `step`
+    /// would see, never a copy that could drift from real VM state.
+    pub fn stack(&self) -> &[Value] {
+        &self.stack
+    }
+
+    /// A read-only snapshot of the call-frame stack (outermost first,
+    /// current call last), for the debug TUI.
+    pub fn frames(&self) -> &[CallFrame] {
+        &self.frames
+    }
+
+    /// The frame execution is currently in, if any — `None` only before
+    /// the first frame exists or after the outermost frame has returned,
+    /// neither of which happens while `step`/`run` are mid-execution.
+    pub fn current_frame(&self) -> Option<&CallFrame> {
+        self.frames.last()
+    }
+
     #[cfg(test)]
     pub(crate) fn stack_len_for_test(&self) -> usize {
         self.stack.len()
@@ -628,6 +655,41 @@ impl Vm {
                 StepOutcome::Done(v) => return Ok(v),
             }
         }
+    }
+
+    /// Runs a new top-level chunk against this `Vm`'s *existing* `globals`
+    /// map and `gc` heap, for the REPL: each entry gets a fresh physical
+    /// `stack`/`open_upvalues`/`frames`, but names a prior entry defined
+    /// (and any GC-allocated values they reference) stay visible and alive.
+    ///
+    /// Mirrors `Vm::new`'s real push order exactly: the new script's own
+    /// closure is *never* pushed onto `stack` — it lives solely in
+    /// `frame.closure`. Only the natives loop populates `stack`, filling
+    /// physical slots 0-7 with the 8 native values, matching what a fresh
+    /// `Vm::new(...)` does and what `ember-compile`'s top-level slot
+    /// numbering assumes.
+    pub fn run_incremental(&mut self, script: FunctionProto) -> Result<Value, RuntimeError> {
+        self.stack.clear();
+        self.open_upvalues.clear();
+        let proto = Rc::new(script);
+        let closure = self.gc.allocate(ClosureObj {
+            proto,
+            upvalues: Vec::new(),
+        });
+        for &(name, arity, func) in crate::natives::NATIVES {
+            let native = Value::Native(Rc::new(crate::value::NativeFn { name, arity, func }));
+            self.stack.push(native.clone());
+            let key = self.gc.intern_str(name);
+            // Re-inserting names already present from a prior entry is a
+            // harmless idempotent overwrite.
+            self.globals.insert(key, native);
+        }
+        self.frames = vec![CallFrame {
+            closure,
+            ip: 0,
+            slot_base: 0,
+        }];
+        self.run()
     }
 
     /// Hoists every open upvalue at or above `from` from the stack to the
@@ -1762,5 +1824,99 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v, Value::Int(9));
+    }
+
+    #[test]
+    fn run_incremental_persists_globals_across_two_calls() {
+        // Entry 1: `let x = 5;` compiled and run alone.
+        let src1 = "let x = 5;";
+        let (ast1, mut interner, stmts1, parse_diags1) = ember_parser::parse(src1);
+        assert!(parse_diags1.is_empty());
+        let (bindings1, resolve_diags1) = ember_resolve::resolve(&ast1, &mut interner, &stmts1);
+        // NOT `.is_empty()` — a bare `let x = 5;` resolved on its own always
+        // produces an "unused variable `x`" WARNING (nothing in this lone
+        // resolve pass knows a later entry will read it). Check only
+        // error-severity diagnostics, matching the convention used
+        // everywhere else in this codebase.
+        assert!(!resolve_diags1
+            .iter()
+            .any(|d| d.severity == ember_diag::Severity::Error));
+        let proto1 = ember_compile::compile(&ast1, &mut interner, &bindings1, &stmts1);
+        let mut vm = Vm::new(proto1);
+        // Vm::new already runs the "first entry" as its own initial script,
+        // so run it here to execute entry 1's own `let`, then use
+        // run_incremental for the second entry against the same Vm.
+        vm.run().unwrap();
+
+        // Entry 2: `x + 1;`, resolved with `x` seeded as a known REPL
+        // global, compiled alone, run via run_incremental against the SAME
+        // vm.
+        let (ast2, stmts2, parse_diags2) = ember_parser::parse_into("x + 1;", &mut interner);
+        assert!(parse_diags2.is_empty());
+        let x_symbol = interner.intern("x");
+        let mut resolver = ember_resolve::Resolver::new(&ast2, &mut interner);
+        resolver.seed_repl_globals(&[x_symbol]);
+        resolver.resolve_program(&stmts2);
+        assert!(
+            resolver.diagnostics().is_empty(),
+            "diags: {:?}",
+            resolver.diagnostics()
+        );
+        let (bindings2, _) = resolver.into_bindings();
+        let proto2 = ember_compile::compile(&ast2, &mut interner, &bindings2, &stmts2);
+
+        let result = vm.run_incremental(proto2).unwrap();
+        // `Value` derives only `Debug, Clone`, not `PartialEq` — every
+        // existing VM test uses `matches!` for this reason, not
+        // `assert_eq!`.
+        assert!(matches!(result, Value::Int(6)));
+    }
+
+    #[test]
+    fn stack_snapshot_reflects_pushed_values() {
+        let proto = script(|c| {
+            let idx = c.add_constant(ember_bytecode::value::Value::Int(42));
+            c.write_op(Op::Constant, 1);
+            c.write_u16(idx, 1);
+            c.write_op(Op::Return, 1);
+        });
+        let mut vm = Vm::new(proto);
+        // Non-empty even before the first step: `Vm::new` pre-seeds
+        // `NATIVE_GLOBAL_COUNT` native-function values onto the physical
+        // stack (see that constant's doc comment) — confirm that baseline
+        // is visible through the accessor too.
+        let base_len = vm.stack().len();
+        assert!(!vm.stack().is_empty());
+
+        assert!(matches!(vm.step(), Ok(StepOutcome::Running)));
+        // The accessor reflects the real, live stack — not a stale copy —
+        // so the just-pushed constant shows up immediately.
+        assert_eq!(vm.stack().len(), base_len + 1);
+        assert!(matches!(vm.stack().last(), Some(Value::Int(42))));
+    }
+
+    #[test]
+    fn frames_snapshot_shows_the_current_call_frame() {
+        let src = "fn f() { 1 } f();";
+        let (ast, mut interner, stmts, parse_diags) = ember_parser::parse(src);
+        assert!(parse_diags.is_empty(), "parse diags: {parse_diags:?}");
+        let (bindings, resolve_diags) = ember_resolve::resolve(&ast, &mut interner, &stmts);
+        assert!(resolve_diags.is_empty(), "resolve diags: {resolve_diags:?}");
+        let proto = ember_compile::compile(&ast, &mut interner, &bindings, &stmts);
+        let mut vm = Vm::new(proto);
+
+        assert_eq!(vm.frames().len(), 1);
+        assert!(vm.current_frame().is_some());
+
+        let mut saw_nested_frame = false;
+        while let StepOutcome::Running = vm.step().expect("should not error") {
+            if vm.frames().len() > 1 {
+                saw_nested_frame = true;
+            }
+        }
+        assert!(
+            saw_nested_frame,
+            "expected frames().len() > 1 at some point while f() was executing"
+        );
     }
 }
