@@ -10,12 +10,12 @@ use crate::prec::{InfixPrec, Prec};
 
 const MAX_EXPR_DEPTH: u32 = 200;
 
-pub struct Parser<'src> {
+pub struct Parser<'src, 'i> {
     src: &'src str,
     tokens: Vec<Token>,
     pos: usize,
     pub ast: Ast,
-    pub interner: Interner,
+    pub interner: &'i mut Interner,
     pub diagnostics: Vec<Diagnostic>,
     panicking: bool,
     depth: u32,
@@ -25,14 +25,14 @@ pub struct Parser<'src> {
     no_struct_literal: bool,
 }
 
-impl<'src> Parser<'src> {
-    pub fn new(src: &'src str, tokens: Vec<Token>) -> Self {
+impl<'src, 'i> Parser<'src, 'i> {
+    pub fn new(src: &'src str, tokens: Vec<Token>, interner: &'i mut Interner) -> Self {
         Parser {
             src,
             tokens,
             pos: 0,
             ast: Ast::new(),
-            interner: Interner::new(),
+            interner,
             diagnostics: Vec::new(),
             panicking: false,
             depth: 0,
@@ -76,7 +76,11 @@ impl<'src> Parser<'src> {
         self.depth += 1;
         if self.depth > MAX_EXPR_DEPTH {
             let span = self.peek().span;
-            self.emit(Diagnostic::error("expression nested too deeply").with_primary(span, "here"));
+            self.emit(
+                Diagnostic::error("expression nested too deeply")
+                    .with_code("E0201")
+                    .with_primary(span, "here"),
+            );
             self.depth -= 1;
             return self.ast.alloc_expr(Expr::Error, span);
         }
@@ -182,6 +186,7 @@ impl<'src> Parser<'src> {
             _ => {
                 self.emit(
                     Diagnostic::error(format!("expected an expression, found `{:?}`", tok.kind))
+                        .with_code("E0202")
                         .with_primary(tok.span, "here"),
                 );
                 self.ast.alloc_expr(Expr::Error, tok.span)
@@ -225,6 +230,7 @@ impl<'src> Parser<'src> {
                 if !self.is_valid_assign_target(lhs) {
                     self.emit(
                         Diagnostic::error("invalid assignment target")
+                            .with_code("E0203")
                             .with_primary(lhs_span, "here")
                             .with_help(
                                 "only variables, fields, and index expressions can be assigned to",
@@ -262,6 +268,7 @@ impl<'src> Parser<'src> {
         }
         self.emit(
             Diagnostic::error(format!("unclosed `{:?}`", open.kind))
+                .with_code("E0204")
                 .with_primary(open.span, "unclosed delimiter")
                 .with_secondary(self.peek().span, "expected the matching close here"),
         );
@@ -308,6 +315,7 @@ impl<'src> Parser<'src> {
         if name_tok.kind != TokenKind::Ident {
             self.emit(
                 Diagnostic::error("expected a field name after `.`")
+                    .with_code("E0205")
                     .with_primary(name_tok.span, "here"),
             );
             return self
@@ -358,7 +366,11 @@ impl<'src> Parser<'src> {
         }
         let span = self.peek().span;
         let found = self.peek().kind;
-        self.emit(Diagnostic::error(msg).with_primary(span, format!("found `{found:?}`")));
+        self.emit(
+            Diagnostic::error(msg)
+                .with_code("E0206")
+                .with_primary(span, format!("found `{found:?}`")),
+        );
         Token { kind, span }
     }
 
@@ -413,6 +425,7 @@ impl<'src> Parser<'src> {
             } else {
                 self.emit(
                     Diagnostic::error("expected `;` after expression")
+                        .with_code("E0207")
                         .with_primary(self.peek().span, format!("found `{:?}`", self.peek().kind)),
                 );
                 stmts.push(self.ast.alloc_stmt(Stmt::ExprStmt(e), e_span));
@@ -439,6 +452,7 @@ impl<'src> Parser<'src> {
             let span = self.peek().span;
             self.emit(
                 Diagnostic::error(format!("expected `{{` to start {what}"))
+                    .with_code("E0208")
                     .with_primary(span, format!("found `{:?}`", self.peek().kind)),
             );
             self.ast.alloc_expr(Expr::Error, span)
@@ -482,6 +496,7 @@ impl<'src> Parser<'src> {
         if tok.kind != TokenKind::Ident {
             self.emit(
                 Diagnostic::error(format!("expected a type, found `{:?}`", tok.kind))
+                    .with_code("E0209")
                     .with_primary(tok.span, "here"),
             );
             return self.ast.alloc_type_expr(TypeExpr::Error, tok.span);
@@ -779,7 +794,9 @@ impl<'src> Parser<'src> {
                 let p = self.advance();
                 if p.kind != TokenKind::Ident {
                     self.emit(
-                        Diagnostic::error("expected a parameter name").with_primary(p.span, "here"),
+                        Diagnostic::error("expected a parameter name")
+                            .with_code("E0205")
+                            .with_primary(p.span, "here"),
                     );
                 } else {
                     let text = self.text(p.span).to_string();
@@ -831,7 +848,11 @@ impl<'src> Parser<'src> {
             let t = self.text(tok.span).to_string();
             self.interner.intern(&t)
         } else {
-            self.emit(Diagnostic::error("expected a field name").with_primary(tok.span, "here"));
+            self.emit(
+                Diagnostic::error("expected a field name")
+                    .with_code("E0205")
+                    .with_primary(tok.span, "here"),
+            );
             self.interner.intern("<error>")
         }
     }
@@ -958,6 +979,7 @@ impl<'src> Parser<'src> {
             _ => {
                 self.emit(
                     Diagnostic::error(format!("expected a pattern, found `{:?}`", tok.kind))
+                        .with_code("E0210")
                         .with_primary(tok.span, "here"),
                 );
                 self.ast.alloc_pat(Pattern::Error, tok.span)
@@ -1031,6 +1053,7 @@ impl<'src> Parser<'src> {
         } else {
             self.emit(
                 Diagnostic::error("expected `;` after expression")
+                    .with_code("E0207")
                     .with_primary(self.peek().span, format!("found `{:?}`", self.peek().kind)),
             );
             self.ast.alloc_stmt(Stmt::ExprStmt(e), e_span)
@@ -1097,13 +1120,14 @@ fn parse_int_literal(text: &str) -> i64 {
     }
 }
 
-/// The main pipeline entry point: lex + parse a whole program into a flat
-/// list of top-level statements. Always returns a complete list, however
-/// malformed the input — a later task adds synchronize()-based recovery
-/// that makes this true even when a statement in the middle fails to parse.
-pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
+/// Lex + parse a whole program into a flat list of top-level statements,
+/// interning identifiers into a caller-supplied `Interner` rather than a
+/// fresh one — lets a REPL (or any other incremental caller) parse
+/// successive chunks of source while keeping `Symbol`s stable across calls.
+/// Always returns a complete list, however malformed the input.
+pub fn parse_into(src: &str, interner: &mut Interner) -> (Ast, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
     let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
-    let mut p = Parser::new(src, tokens);
+    let mut p = Parser::new(src, tokens, interner);
     p.diagnostics.extend(lex_diags);
     let mut stmts = Vec::new();
     while !p.at_end() {
@@ -1117,7 +1141,18 @@ pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
             p.synchronize();
         }
     }
-    (p.ast, p.interner, stmts, p.diagnostics)
+    (p.ast, stmts, p.diagnostics)
+}
+
+/// The main pipeline entry point: lex + parse a whole program into a flat
+/// list of top-level statements, against a freshly-created `Interner`.
+/// Always returns a complete list, however malformed the input — a later
+/// task adds synchronize()-based recovery that makes this true even when a
+/// statement in the middle fails to parse.
+pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
+    let mut interner = Interner::new();
+    let (ast, stmts, diags) = parse_into(src, &mut interner);
+    (ast, interner, stmts, diags)
 }
 
 /// Test/dev helper: lex + parse a single expression from source. Only
@@ -1126,11 +1161,14 @@ pub fn parse(src: &str) -> (Ast, Interner, Vec<Idx<Stmt>>, Vec<Diagnostic>) {
 /// crate.
 #[cfg(test)]
 pub(crate) fn parse_expr_from_str(src: &str) -> (Ast, Interner, Idx<Expr>, Vec<Diagnostic>) {
+    let mut interner = Interner::new();
     let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
-    let mut p = Parser::new(src, tokens);
+    let mut p = Parser::new(src, tokens, &mut interner);
     p.diagnostics.extend(lex_diags);
     let e = p.expr(Prec::None);
-    (p.ast, p.interner, e, p.diagnostics)
+    let ast = p.ast;
+    let diagnostics = p.diagnostics;
+    (ast, interner, e, diagnostics)
 }
 
 /// Test/dev helper: lex + parse a single whole statement from source. Same
@@ -1138,11 +1176,14 @@ pub(crate) fn parse_expr_from_str(src: &str) -> (Ast, Interner, Idx<Expr>, Vec<D
 /// only exercised by this module's own tests today.
 #[cfg(test)]
 pub(crate) fn parse_stmt_from_str(src: &str) -> (Ast, Interner, Idx<Stmt>, Vec<Diagnostic>) {
+    let mut interner = Interner::new();
     let (tokens, _trivia, lex_diags) = ember_lexer::lex(src);
-    let mut p = Parser::new(src, tokens);
+    let mut p = Parser::new(src, tokens, &mut interner);
     p.diagnostics.extend(lex_diags);
     let s = p.stmt();
-    (p.ast, p.interner, s, p.diagnostics)
+    let ast = p.ast;
+    let diagnostics = p.diagnostics;
+    (ast, interner, s, diagnostics)
 }
 
 #[cfg(test)]
@@ -1646,6 +1687,23 @@ mod tests {
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
         assert!(diags[0].message.contains("unclosed"));
         assert_eq!(diags[0].primary_span(), Some(Span::new(0, 1)));
+    }
+
+    #[test]
+    fn parse_into_reuses_the_given_interner_across_two_calls() {
+        let mut interner = Interner::new();
+        let (_ast1, _stmts1, diags1) = parse_into("let x = 1;", &mut interner);
+        assert!(diags1.is_empty());
+        let x_symbol_after_first = interner.intern("x");
+
+        let (_ast2, _stmts2, diags2) = parse_into("x + 1;", &mut interner);
+        assert!(diags2.is_empty());
+        let x_symbol_after_second = interner.intern("x");
+
+        assert_eq!(
+            x_symbol_after_first, x_symbol_after_second,
+            "the same source identifier interned across two parse_into calls on the same Interner must produce the same Symbol"
+        );
     }
 
     #[test]
