@@ -4,26 +4,26 @@ use crate::interner::Symbol;
 use crate::ty::TypeExpr;
 use ember_span::Span;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Param {
     pub name: Symbol,
     pub ty: Option<Idx<TypeExpr>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AdtVariant {
     pub name: Symbol,
     pub payload: Vec<Idx<TypeExpr>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct FieldDecl {
     pub name: Symbol,
     pub ty: Idx<TypeExpr>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Stmt {
     Let {
         name: Symbol,
