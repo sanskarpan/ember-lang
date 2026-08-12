@@ -28,6 +28,7 @@ pub struct GcHeap {
     next_gc: usize,
     strings: FxHashMap<String, NonNull<GcBox<String>>>,
     stats: GcStats,
+    stress: bool,
 }
 
 impl Default for GcHeap {
@@ -38,6 +39,7 @@ impl Default for GcHeap {
             next_gc: INITIAL_NEXT_GC,
             strings: FxHashMap::default(),
             stats: GcStats::default(),
+            stress: cfg!(feature = "gc-stress"),
         }
     }
 }
@@ -85,10 +87,18 @@ impl GcHeap {
     /// instruction handler to do more than one allocation in a row without
     /// any of them needing to be a fully-rooted temporary in between.
     pub fn should_collect(&self) -> bool {
-        if cfg!(feature = "gc-stress") {
+        if self.stress {
             return true;
         }
         self.bytes_allocated > self.next_gc
+    }
+
+    /// Overrides the compile-time `gc-stress` feature at runtime: when `on`
+    /// is true, `should_collect` always returns true regardless of how the
+    /// crate was compiled; when false, it falls back to normal
+    /// threshold-based collection.
+    pub fn set_stress(&mut self, on: bool) {
+        self.stress = on;
     }
 
     pub fn allocate<T: Trace>(&mut self, data: T) -> Gc<T> {
@@ -381,5 +391,22 @@ mod tests {
     fn under_gc_stress_should_collect_is_always_true_even_on_an_empty_heap() {
         let heap = GcHeap::new();
         assert!(heap.should_collect());
+    }
+
+    #[test]
+    fn set_stress_forces_collection_regardless_of_the_cargo_feature() {
+        let mut heap = GcHeap::new();
+        heap.set_stress(true);
+        assert!(heap.should_collect());
+    }
+
+    #[test]
+    fn set_stress_false_restores_normal_threshold_based_collection() {
+        let mut heap = GcHeap::new();
+        heap.set_stress(false);
+        assert!(
+            !heap.should_collect(),
+            "a fresh empty heap should not want to collect yet"
+        );
     }
 }
