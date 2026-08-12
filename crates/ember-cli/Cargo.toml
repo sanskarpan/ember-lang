@@ -18,9 +18,14 @@ ember-types = { path = "../ember-types" }
 ember-tree = { path = "../ember-tree" }
 ember-bytecode = { path = "../ember-bytecode" }
 ember-compile = { path = "../ember-compile" }
-ember-vm = { path = "../ember-vm" }
+ember-vm = { path = "../ember-vm", features = ["count-allocs"] }
 ember-fmt = { path = "../ember-fmt" }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+serde_json = "1"
+rustyline = "14"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
 
 [features]
 gc-stress = ["ember-vm/gc-stress"]
