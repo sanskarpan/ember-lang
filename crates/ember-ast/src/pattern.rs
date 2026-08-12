@@ -2,7 +2,7 @@ use crate::idx::Idx;
 use crate::interner::Symbol;
 use ember_span::Span;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum Pattern {
     Wild,
     Bind(Symbol),
@@ -27,7 +27,7 @@ pub enum Pattern {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct MatchArm {
     pub pat: Idx<Pattern>,
     pub guard: Option<Idx<crate::expr::Expr>>,
