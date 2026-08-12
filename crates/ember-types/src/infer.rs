@@ -422,6 +422,7 @@ impl<'a> Infer<'a> {
                 let name = self.interner.resolve(sym).to_string();
                 self.diagnostics.push(
                     Diagnostic::error(format!("undeclared name `{name}`"))
+                        .with_code("E0401")
                         .with_primary(span, "not found in this scope"),
                 );
                 self.subst.fresh()
@@ -514,6 +515,7 @@ impl<'a> Infer<'a> {
                         Diagnostic::error(format!(
                             "expected {expected} argument(s), found {found}"
                         ))
+                        .with_code("E0402")
                         .with_primary(call_span, format!("expected {expected}, found {found}")),
                     );
                     for &a in args {
@@ -554,6 +556,7 @@ impl<'a> Infer<'a> {
                 let other_str = self.display(&other);
                 self.diagnostics.push(
                     Diagnostic::error(format!("`{other_str}` is not callable"))
+                        .with_code("E0403")
                         .with_primary(call_span, "attempted call here"),
                 );
                 for &a in args {
@@ -628,6 +631,7 @@ impl<'a> Infer<'a> {
                             let span = self.ast.span_of_type_expr(idx);
                             self.diagnostics.push(
                                 Diagnostic::error(format!("unknown type `{name}`"))
+                                    .with_code("E0404")
                                     .with_primary(span, "not found"),
                             );
                             self.subst.fresh()
@@ -644,6 +648,7 @@ impl<'a> Infer<'a> {
                     let span = self.ast.span_of_type_expr(idx);
                     self.diagnostics.push(
                         Diagnostic::error(format!("type `{text}` does not take type arguments"))
+                            .with_code("E0405")
                             .with_primary(
                                 span,
                                 "user-declared types have no generic parameters this phase",
@@ -757,6 +762,7 @@ impl<'a> Infer<'a> {
             let name_str = self.interner.resolve(name).to_string();
             self.diagnostics.push(
                 Diagnostic::error(format!("unknown type `{name_str}`"))
+                    .with_code("E0404")
                     .with_primary(span, "not found"),
             );
             for &(_, v) in fields {
@@ -768,6 +774,7 @@ impl<'a> Infer<'a> {
             let name_str = self.interner.resolve(name).to_string();
             self.diagnostics.push(
                 Diagnostic::error(format!("`{name_str}` is not a struct"))
+                    .with_code("E0406")
                     .with_primary(span, "struct literal syntax used here"),
             );
             for &(_, v) in fields {
@@ -798,6 +805,7 @@ impl<'a> Infer<'a> {
                     let name_str = self.interner.resolve(name).to_string();
                     self.diagnostics.push(
                         Diagnostic::error(format!("no field `{field_str}` on struct `{name_str}`"))
+                            .with_code("E0407")
                             .with_primary(span, "unknown field in this struct literal"),
                     );
                 }
@@ -811,6 +819,7 @@ impl<'a> Infer<'a> {
                     Diagnostic::error(format!(
                         "missing field `{field_str}` in struct `{name_str}`"
                     ))
+                    .with_code("E0408")
                     .with_primary(span, format!("`{name_str}` requires a `{field_str}` field")),
                 );
             }
@@ -859,6 +868,7 @@ impl<'a> Infer<'a> {
                                 Diagnostic::error(format!(
                                     "no field `{field_str}` on type `{type_str}`"
                                 ))
+                                .with_code("E0407")
                                 .with_primary(ob.span, "unknown field"),
                             );
                         }
@@ -867,6 +877,7 @@ impl<'a> Infer<'a> {
                 Ty::Var(_) => {
                     self.diagnostics.push(
                         Diagnostic::error("cannot infer the type of this field access")
+                            .with_code("E0409")
                             .with_primary(ob.span, "add a type annotation to resolve this")
                             .with_help(
                                 "field access needs a known struct type; ember doesn't infer field types structurally across unrelated declarations",
@@ -877,6 +888,7 @@ impl<'a> Infer<'a> {
                     let type_str = self.display(&other);
                     self.diagnostics.push(
                         Diagnostic::error(format!("type `{type_str}` has no fields"))
+                            .with_code("E0410")
                             .with_primary(ob.span, "attempted field access here"),
                     );
                 }
@@ -977,6 +989,7 @@ impl<'a> Infer<'a> {
                                     payload.len(),
                                     args.len()
                                 ))
+                                .with_code("E0411")
                                 .with_primary(span, "pattern here"),
                             );
                         } else {
@@ -989,6 +1002,7 @@ impl<'a> Infer<'a> {
                         let name_str = self.interner.resolve(name).to_string();
                         self.diagnostics.push(
                             Diagnostic::error(format!("unknown constructor `{name_str}`"))
+                                .with_code("E0412")
                                 .with_primary(span, "not found"),
                         );
                     }
@@ -1010,6 +1024,7 @@ impl<'a> Infer<'a> {
                                     Diagnostic::error(format!(
                                         "no field `{field_str}` on this struct"
                                     ))
+                                    .with_code("E0407")
                                     .with_primary(span, "in this pattern"),
                                 );
                             }
@@ -1020,6 +1035,7 @@ impl<'a> Infer<'a> {
                     let name_str = self.interner.resolve(name).to_string();
                     self.diagnostics.push(
                         Diagnostic::error(format!("`{name_str}` is not a struct"))
+                            .with_code("E0406")
                             .with_primary(span, "record pattern used here"),
                     );
                 }
