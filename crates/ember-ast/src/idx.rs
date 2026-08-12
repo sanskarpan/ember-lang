@@ -41,6 +41,20 @@ impl<T> std::fmt::Debug for Idx<T> {
     }
 }
 
+// Hand-written for the same reason as every other impl in this file:
+// `#[derive(serde::Serialize)]` would add a `T: Serialize` bound even though
+// `T` only appears inside `PhantomData<T>` — an index's serialized form never
+// depends on properties of the thing it points at, so `Idx<T>` must be
+// `Serialize` for every `T`, unconditionally.
+impl<T> serde::Serialize for Idx<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.raw)
+    }
+}
+
 impl<T> Idx<T> {
     pub fn new(raw: u32) -> Self {
         Idx {
